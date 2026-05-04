@@ -1334,11 +1334,30 @@ function setupIPC() {
   // Adds entries under HKCU\Software\Classes\Directory\shell\NexTerm and
   // ...\Background\shell\NexTerm so the context menu works on folders AND
   // inside an open folder. Per-user only — no admin needed.
-  function getExePath() {
-    return app.isPackaged ? process.execPath : process.execPath  // dev: still electron.exe; user can re-run after installing
+  // Find the installed NexTerm.exe. When packaged, process.execPath IS that
+  // path. In dev mode process.execPath = electron.exe, which the registry
+  // mustn't capture (Explorer would invoke it with a folder arg, and Electron
+  // would try to load the folder as a JS app — confusing failure).
+  function getInstalledExePath() {
+    if (app.isPackaged) return process.execPath
+    const candidates = [
+      join(process.env.LOCALAPPDATA || '', 'Programs', 'NexTerm', 'NexTerm.exe'),
+      'C:\\Program Files\\NexTerm\\NexTerm.exe',
+      'C:\\Program Files (x86)\\NexTerm\\NexTerm.exe'
+    ]
+    for (const p of candidates) {
+      if (p && existsSync(p)) return p
+    }
+    return null
   }
   ipcMain.handle('explorer:installContextMenu', async () => {
-    const exe = getExePath()
+    const exe = getInstalledExePath()
+    if (!exe) {
+      return {
+        ok: false,
+        error: 'NexTerm.exe not found.\nInstall NexTerm from the Setup .exe first, then enable this from the installed app (not from `npm run dev`).'
+      }
+    }
     const iconPath = exe
     const cmdShell = `"${exe}" "%V"`
     const cmdBg    = `"${exe}" "%V"`
