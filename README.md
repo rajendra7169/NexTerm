@@ -22,36 +22,52 @@ A daily-driver Windows terminal that pulls in the best ideas from iTerm2, Window
 
 <img src="docs/screenshots/main.png" alt="NexTerm main window" width="900" />
 
-*Default view — banner, system info, themed prompt with command timer, status bar*
+*Default view — ASCII banner, system info, Material Ocean theme, command timer, status bar*
 
 </div>
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/sftp.png" alt="SFTP side panel" /></td>
-    <td width="50%"><img src="docs/screenshots/profiles.png" alt="SSH profile editor" /></td>
+    <td width="50%"><img src="docs/screenshots/shells.png" alt="Shell picker" /></td>
+    <td width="50%"><img src="docs/screenshots/history.png" alt="Command history panel" /></td>
   </tr>
   <tr>
-    <td align="center"><strong>SFTP side panel</strong> — drag-drop upload, download, delete</td>
-    <td align="center"><strong>SSH profile</strong> — tunnels, jump-hosts, auto-reconnect</td>
+    <td align="center"><strong>Multiple shells</strong><br/><sub>PowerShell, CMD, Git Bash, WSL, Zsh & Fish via WSL, Scratchpad</sub></td>
+    <td align="center"><strong>Command history</strong><br/><sub>Cross-shell, scoped to folder / subdirs / all, click to re-run</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/settings.png" alt="Settings panel" /></td>
-    <td><img src="docs/screenshots/themes.png" alt="Theme picker" /></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Settings</strong> — every preference in one place</td>
-    <td align="center"><strong>19 themes</strong> — Tokyo Night, Dracula, Gruvbox, Solarized, etc.</td>
-  </tr>
-  <tr>
+    <td><img src="docs/screenshots/profiles.png" alt="SSH profile editor" /></td>
     <td><img src="docs/screenshots/splits.png" alt="Pane splits" /></td>
-    <td><img src="docs/screenshots/snippets.png" alt="Snippet picker" /></td>
   </tr>
   <tr>
-    <td align="center"><strong>Pane splits</strong> — broadcast, color tabs, status bar</td>
-    <td align="center"><strong>Snippets</strong> — fuzzy pick, <code>${param:default}</code> placeholders</td>
+    <td align="center"><strong>SSH Profiles</strong><br/><sub>Tunnels (-L/-R/-D), jump-host chains, auto-reconnect</sub></td>
+    <td align="center"><strong>Pane splits</strong><br/><sub>Side-by-side / top-bottom; broadcast input across all</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/themes.png" alt="19 themes" /></td>
+    <td><img src="docs/screenshots/settings.png" alt="Window settings" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>19 themes</strong><br/><sub>Tokyo Night, Dracula, Gruvbox, Solarized, Material Ocean…</sub></td>
+    <td align="center"><strong>Window settings</strong><br/><sub>Status bar, mini-map, animated banner, Quake mode, etc.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/terminal.png" alt="Terminal settings" /></td>
+    <td><img src="docs/screenshots/font.png" alt="Font settings" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Terminal settings</strong><br/><sub>Scrollback, banner, paste warnings, ASCII logo picker</sub></td>
+    <td align="center"><strong>Font settings</strong><br/><sub>Family, size, line height, cursor style + live preview</sub></td>
   </tr>
 </table>
+
+<div align="center">
+
+<img src="docs/screenshots/config.png" alt="Config / JSON snapshot" width="900" />
+
+*Every preference is just JSON — open it, edit by hand, share, back up, or import a friend's config*
+
+</div>
 
 ---
 
