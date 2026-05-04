@@ -68,7 +68,6 @@ body.bg-effect .xterm-container   { background: transparent; }
 
 html, body { padding: 0; margin: 0; }
 
-/* App shell — full window with a soft white border */
 .app-shell {
   display: flex;
   flex-direction: column;
@@ -77,11 +76,20 @@ html, body { padding: 0; margin: 0; }
   position: relative;
   overflow: hidden;
   background: var(--bg);
-  border: 1px solid rgba(255, 255, 255, 0.35);
   box-sizing: border-box;
 }
 
-body.win-maximized .app-shell { border: none; }
+/* Overlay border drawn on top of everything (immune to child painting and
+   sub-pixel right-edge clipping). Hidden when the window is maximized. */
+.app-border {
+  position: fixed;
+  inset: 0;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  z-index: 9999;
+  box-sizing: border-box;
+}
+body.win-maximized .app-border { display: none; }
 
 /* When background-effect mode is on, app-shell becomes transparent so the
    bg layers (and OS blur) can show through. */
@@ -1675,6 +1683,7 @@ body.bg-effect .shell-menu {
   background: var(--bg);
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
 }
 
 

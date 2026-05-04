@@ -65,6 +65,7 @@ export default function App() {
     return off
   }, [])
 
+
   useEffect(() => {
     (async () => {
       const s = await window.nexterm.settings.get()
@@ -347,6 +348,8 @@ export default function App() {
           onProfiles={() => { setShowPalette(false); setShowProfiles(true) }}
         />
       )}
+
+      <div className="app-border" />
 
       {showHistory  && <HistoryPanel  onClose={() => setShowHistory(false)} />}
       {showProfiles && <ProfilesPanel onClose={() => setShowProfiles(false)} />}

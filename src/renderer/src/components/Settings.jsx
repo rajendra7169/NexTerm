@@ -355,6 +355,17 @@ function BookmarksSection({ settings, set }) {
   function remove(i)    { set({ bookmarks: bookmarks.filter((_, j) => j !== i) }) }
   function upd(i, k, v) { set({ bookmarks: bookmarks.map((b, j) => j === i ? { ...b, [k]: v } : b) }) }
 
+  function go(b) {
+    if (!b.path) return
+    const { tabs, activeId } = useStore.getState()
+    const tab = tabs.find(t => t.id === activeId)
+    const paneId = tab?.activePane
+    if (!paneId) return
+    // Quote the path in single quotes (PowerShell-friendly) and escape any '
+    const psQuoted = `'${b.path.replace(/'/g, "''")}'`
+    window.nexterm.pty.write(paneId, `Set-Location ${psQuoted}\r`)
+  }
+
   return (
     <div className="settings-group">
       <p className="section-title">Directory Bookmarks</p>
@@ -379,6 +390,15 @@ function BookmarksSection({ settings, set }) {
               value={b.path}
               onChange={e => upd(i, 'path', e.target.value)}
             />
+            <button
+              className="btn-secondary"
+              onClick={() => go(b)}
+              disabled={!b.path}
+              title="Jump to this path in the active terminal"
+              style={{ padding: '4px 10px' }}
+            >
+              Go
+            </button>
             <button className="icon-btn" onClick={() => remove(i)} title="Delete">🗑</button>
           </div>
         ))}

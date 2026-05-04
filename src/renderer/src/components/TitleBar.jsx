@@ -118,18 +118,13 @@ export default function TitleBar({ onSettings, onHistory, onPalette, onProfiles 
     </div>
   )
 
-  // Double-click empty title bar area → toggle maximize (standard Windows UX)
-  function onTitleBarDoubleClick(e) {
-    // Skip if double-click landed on a button, input, icon, or anything no-drag
-    if (e.target.closest('button, input, .no-drag')) return
-    window.nexterm.win.maximize()
-  }
+  // With titleBarStyle:'hidden', Windows handles double-click→maximize
+  // natively on -webkit-app-region:drag areas. No JS handler needed.
 
   const isCenter = iconPos === 'center'
   return (
     <div
       className={`titlebar tb-${placement} tb-icons-${iconPos}`}
-      onDoubleClick={onTitleBarDoubleClick}
     >
       {placement === 'left' && Controls}
       <span className="tb-brand">

@@ -1,6 +1,6 @@
 {
   "name": "nexterm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "NexTerm – A modern, feature-rich terminal for Windows",
   "author": "Rajendra Pandey <rajendrapandey199971@gmail.com>",
   "license": "SEE LICENSE IN LICENSE",
@@ -16,6 +16,7 @@
     "@xterm/addon-image": "^0.9.0",
     "better-sqlite3": "^9.4.3",
     "js-yaml": "^4.1.1",
+    "koffi": "^2.16.1",
     "node-pty": "^1.0.0",
     "ssh2": "^1.17.0"
   },
@@ -57,7 +58,8 @@
       "node_modules/node-pty/**/*",
       "node_modules/better-sqlite3/**/*",
       "node_modules/ssh2/**/*",
-      "node_modules/cpu-features/**/*"
+      "node_modules/cpu-features/**/*",
+      "node_modules/koffi/**/*"
     ],
     "win": {
       "target": [

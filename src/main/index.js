@@ -74,6 +74,35 @@ process.on('uncaughtException', (err) => {
 let db
 let mainWindow
 
+// Win11 rounds frame:false / titleBarStyle:hidden windows by default. Force
+// square corners via DwmSetWindowAttribute(33, 1) using koffi (synchronous
+// FFI — pre-built binary, no native compilation needed).
+let _dwmSet = null
+function getDwmSet() {
+  if (_dwmSet !== null) return _dwmSet
+  if (process.platform !== 'win32') { _dwmSet = false; return false }
+  try {
+    const koffi = require('koffi')
+    const dwmapi = koffi.load('dwmapi.dll')
+    _dwmSet = dwmapi.func('long DwmSetWindowAttribute(void*, uint, _In_ void*, uint)')
+  } catch (e) { console.error('[koffi load]', e?.message); _dwmSet = false }
+  return _dwmSet
+}
+function setCornerPreference(win, value) {
+  // value: 0 = DEFAULT, 1 = DONOTROUND, 2 = ROUND, 3 = ROUNDSMALL
+  if (!win || win.isDestroyed()) return
+  const fn = getDwmSet()
+  if (!fn) return
+  try {
+    const koffi = require('koffi')
+    const handleBuf = win.getNativeWindowHandle()
+    const hwnd = koffi.as(handleBuf, 'void*')
+    const pref = Buffer.alloc(4)
+    pref.writeUInt32LE(value, 0)
+    fn(hwnd, 33, pref, 4)  // DWMWA_WINDOW_CORNER_PREFERENCE = 33
+  } catch (e) { console.error('[setCornerPreference]', e?.message) }
+}
+
 function safeSend(channel, ...args) {
   try {
     if (!mainWindow || mainWindow.isDestroyed()) return
@@ -1637,18 +1666,23 @@ function createWindow() {
     height = SIZE_PRESETS[preset].height
   }
 
-  // Only use transparent:true when we actually need it (blur, image, or low opacity).
-  // Reason: transparent windows on Windows lose the smooth maximize/minimize OS
-  // animations. Opaque windows get them back.
-  const needsTransparent =
-    (settings.windowBlur && settings.windowBlur !== 'none') ||
-    !!settings.backgroundImage ||
-    (typeof settings.terminalOpacity === 'number' && settings.terminalOpacity < 1.0)
+  // ALWAYS opaque — `transparent:true` makes Windows treat the window as a
+  // layered window which kills Win11 rounded corners, native dblclick→maximize,
+  // snap layouts, and smooth animations. None of our visuals require it:
+  //   - background image: rendered as a CSS layer in the renderer
+  //   - blur: setBackgroundMaterial works on opaque windows
+  //   - opacity: setOpacity works on opaque windows
+  const needsTransparent = false
+  console.log(`[createWindow] needsTransparent=${needsTransparent} blur=${settings.windowBlur} opacity=${settings.terminalOpacity}`)
 
   mainWindow = new BrowserWindow({
     width, height,
     minWidth: 500, minHeight: 350,
-    frame: false,
+    // titleBarStyle:'hidden' keeps OS-managed window frame (smooth maximize
+    // animations, native dblclick→maximize, native snap layouts, Win11 rounded
+    // corners) but hides the OS title-bar UI so we can put our custom one on
+    // top. Critical: no titleBarOverlay → OS controls overlay stays hidden.
+    titleBarStyle: 'hidden',
     transparent: needsTransparent,
     hasShadow: true,
     backgroundColor: needsTransparent ? '#00' + themeBg.slice(1) : themeBg,
@@ -1684,6 +1718,9 @@ function createWindow() {
       const isOsMaterial = ['mica','acrylic','tabbed'].includes(settings.windowBlur)
       mainWindow.setBackgroundMaterial?.(isOsMaterial ? settings.windowBlur : 'none')
     } catch {}
+    // Force Win11 rounded corners. Most Win11 builds auto-round titleBarStyle:'hidden'
+    // windows, but some don't unless we explicitly set DWMWA_WINDOW_CORNER_PREFERENCE = ROUND (2).
+    try { setCornerPreference(mainWindow, 2) } catch (e) { console.error('[corners]', e?.message) }
   })
 
   // If "Run in Background" is on, intercept the close event and hide the window
