@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+out/
+dist/
+
+# Installer/release artifacts (published as GitHub Release assets, not in git)
+release/
+
+# Editor/OS junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local environment
+.env
+.env.local
+*.log
