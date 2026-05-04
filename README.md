@@ -7,7 +7,7 @@
 **A modern, feature-rich terminal for Windows — free and built from scratch.**
 
 [![Download for Windows](https://img.shields.io/badge/Download-Windows%20Installer-2563eb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/rajendra7169/NexTerm/releases/latest)
-[![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](LICENSE)
+[![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20Noncommercial-22c55e?style=for-the-badge)](LICENSE)
 [![Built with Electron](https://img.shields.io/badge/Built%20with-Electron-47848f?style=for-the-badge&logo=electron)](https://www.electronjs.org/)
 
 A daily-driver Windows terminal that pulls in the best ideas from iTerm2, Windows Terminal, Warp, and Tabby — and ships them all for free in a single installer.
@@ -199,7 +199,17 @@ build/            # icons + NSIS sidebar/header bitmaps
 
 ## 📜 License
 
-MIT — see [LICENSE](LICENSE).
+NexTerm is licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
+
+In plain English:
+
+- ✅ **Free to use** for personal, hobby, study, research, and any other non-commercial purpose
+- ✅ **Free for charities, schools, public-research, and government institutions**
+- ✅ **Free to fork, modify, and share** non-commercially
+- ❌ **No commercial use** — you may not sell, bundle, host, or monetize NexTerm or any work based on it
+- ❌ **No commercial redistribution** — including paid SaaS, paid support, or selling modified copies
+
+If you'd like to use NexTerm commercially, please contact the author for a separate commercial license.
 
 NexTerm is built and maintained by **Rajendra Pandey**.
 Bugs, features, ideas → [open an issue](https://github.com/rajendra7169/NexTerm/issues).

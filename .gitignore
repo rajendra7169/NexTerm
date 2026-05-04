@@ -15,6 +15,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+.claude/
 
 # Local environment
 .env
