@@ -16,6 +16,45 @@ A daily-driver Windows terminal that pulls in the best ideas from iTerm2, Window
 
 ---
 
+## 📸 Screenshots
+
+<div align="center">
+
+<img src="docs/screenshots/main.png" alt="NexTerm main window" width="900" />
+
+*Default view — banner, system info, themed prompt with command timer, status bar*
+
+</div>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/sftp.png" alt="SFTP side panel" /></td>
+    <td width="50%"><img src="docs/screenshots/profiles.png" alt="SSH profile editor" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>SFTP side panel</strong> — drag-drop upload, download, delete</td>
+    <td align="center"><strong>SSH profile</strong> — tunnels, jump-hosts, auto-reconnect</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/settings.png" alt="Settings panel" /></td>
+    <td><img src="docs/screenshots/themes.png" alt="Theme picker" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Settings</strong> — every preference in one place</td>
+    <td align="center"><strong>19 themes</strong> — Tokyo Night, Dracula, Gruvbox, Solarized, etc.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/splits.png" alt="Pane splits" /></td>
+    <td><img src="docs/screenshots/snippets.png" alt="Snippet picker" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Pane splits</strong> — broadcast, color tabs, status bar</td>
+    <td align="center"><strong>Snippets</strong> — fuzzy pick, <code>${param:default}</code> placeholders</td>
+  </tr>
+</table>
+
+---
+
 ## ✨ Quick install
 
 1. Grab the latest **`NexTerm-Setup-x.y.z.exe`** from the [**Releases page**](https://github.com/rajendra7169/NexTerm/releases/latest).
