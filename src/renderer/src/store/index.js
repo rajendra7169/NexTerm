@@ -97,7 +97,17 @@ const DEFAULT_SETTINGS = {
 
   // Productivity
   commandTimer:    true,    // [1.2s] before each prompt
-  scratchpads:     {}       // { paneId: text }
+  scratchpads:     {},      // { paneId: text }
+  promptStyle:     'powerline',  // 'powerline' | 'minimal' | 'classic'
+
+  // Banner widgets (rendered under the ASCII art on the left)
+  widgets: {
+    internet:    true,
+    publicIp:    true,
+    weather:     true,
+    crypto:      false,
+    cryptoCoins: ['bitcoin', 'ethereum']
+  }
 }
 
 let counter = 1

@@ -1490,6 +1490,8 @@ export default function Settings({ onClose }) {
                 </div>
                 <LogoPicker logos={logos} settings={settings} set={set} />
               </div>
+
+              <BannerWidgetsRows settings={settings} set={set} />
             </div>
           )}
 
@@ -1521,6 +1523,31 @@ export default function Settings({ onClose }) {
                 />
               </div>
               <WslDistrosRow />
+
+              <div className="settings-row" style={{ alignItems: 'flex-start' }}>
+                <div>
+                  <div className="settings-label">PowerShell Prompt Style</div>
+                  <div className="settings-desc">
+                    How your prompt is rendered. Open a new tab to apply.
+                  </div>
+                </div>
+                <div className="cursor-opts">
+                  {[
+                    { v: 'powerline', l: 'Powerline' },
+                    { v: 'pills',     l: 'Pills'     },
+                    { v: 'minimal',   l: 'Minimal'   },
+                    { v: 'classic',   l: 'Classic'   }
+                  ].map(o => (
+                    <button
+                      key={o.v}
+                      className={`cursor-opt ${(settings.promptStyle || 'powerline') === o.v ? 'active' : ''}`}
+                      onClick={() => set({ promptStyle: o.v })}
+                    >
+                      {o.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -1903,6 +1930,30 @@ function SnippetsSection({ settings, set }) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function BannerWidgetsRows({ settings, set }) {
+  const w = settings.widgets || {}
+  function upd(patch) { set({ widgets: { ...w, ...patch } }) }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 16 }}>
+      <div className="settings-label">Banner Extras</div>
+      <div className="settings-desc" style={{ marginBottom: 6 }}>
+        Tiny extras shown in the welcome banner of every new shell. Data refreshed every 5 min.
+      </div>
+
+      <div className="settings-subcard">
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Inline weather</div>
+            <div className="settings-desc">Tiny ⛅ 23°C City next to your user@host (open-meteo.com, no key)</div>
+          </div>
+          <Toggle checked={w.weather !== false} onChange={v => upd({ weather: v })} />
+        </div>
+      </div>
     </div>
   )
 }

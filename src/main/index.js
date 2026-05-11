@@ -336,15 +336,28 @@ function createPty(id, shellPath, cwd, cols, rows, args = []) {
       } catch (e) { console.error('[banner write]', e?.message); bannerFile = null }
       if (bannerFile) {
         const sp = bannerFile.replace(/'/g, "''")
-        if (settings.animatedBanner === true) {
-          // Type-in effect: write each line with a tiny delay so it feels alive.
-          bannerLine =
-            `foreach ($l in [IO.File]::ReadAllLines('${sp}',[Text.Encoding]::UTF8)) { ` +
-            `[Console]::Out.WriteLine($l); Start-Sleep -Milliseconds 25 }; ` +
-            `Remove-Item -LiteralPath '${sp}' -Force -EA SilentlyContinue`
-        } else {
-          bannerLine = `[Console]::Out.Write([IO.File]::ReadAllText('${sp}',[Text.Encoding]::UTF8))\nRemove-Item -LiteralPath '${sp}' -Force -EA SilentlyContinue`
-        }
+        const lineDelay = settings.animatedBanner === true ? '; Start-Sleep -Milliseconds 25' : ''
+        // ALWAYS iterate line-by-line so we can detect the sentinel-marked
+        // quote line and char-animate just that one. animatedBanner only
+        // controls whether OTHER lines get a small inter-line delay too.
+        bannerLine =
+          `$sent = [char]0x1e\n` +
+          `foreach ($l in [IO.File]::ReadAllLines('${sp}',[Text.Encoding]::UTF8)) {\n` +
+          `  if ($l.Contains($sent)) {\n` +
+          `    $i1 = $l.IndexOf($sent); $i2 = $l.LastIndexOf($sent)\n` +
+          `    [Console]::Out.Write($l.Substring(0, $i1))\n` +
+          `    [Console]::Out.Write([char]27 + '[3;90m')\n` +
+          `    foreach ($c in $l.Substring($i1 + 1, $i2 - $i1 - 1).ToCharArray()) {\n` +
+          `      [Console]::Out.Write($c); Start-Sleep -Milliseconds 28\n` +
+          `    }\n` +
+          `    [Console]::Out.Write([char]27 + '[0m')\n` +
+          `    if ($l.Length -gt $i2 + 1) { [Console]::Out.Write($l.Substring($i2 + 1)) }\n` +
+          `    [Console]::Out.WriteLine()\n` +
+          `  } else {\n` +
+          `    [Console]::Out.WriteLine($l)${lineDelay}\n` +
+          `  }\n` +
+          `}\n` +
+          `Remove-Item -LiteralPath '${sp}' -Force -EA SilentlyContinue`
       }
     }
 
@@ -378,7 +391,9 @@ function createPty(id, shellPath, cwd, cols, rows, args = []) {
       : '@{}'
 
     const sip = initFile.replace(/'/g, "''")
-    const initScript = `${bannerLine}
+    // Force UTF-8 output so the weather glyph + box-drawing chars render correctly.
+    const initScript = `try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+${bannerLine}
 
 # ── NexTerm directory bookmarks ──
 $global:nextermBookmarks = ${bookmarkHash}
@@ -428,6 +443,7 @@ ${aliasFunctions}
 # ── Command timer + smart cd (zoxide-style) ──
 $global:__nexterm_freqFile = ${psStr(join(USER_DATA, 'cd_freq.json'))}
 $global:__nexterm_showTimer = $${(settings.commandTimer !== false).toString()}
+$global:__nexterm_promptStyle = ${psStr(settings.promptStyle || 'powerline')}
 
 function global:cd {
     param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Path)
@@ -455,31 +471,165 @@ function global:cd {
     Write-Host "cd: no match for '$target'" -ForegroundColor Red
 }
 
-# ── OSC 7 prompt + command timer ──
+# ── Beautiful prompt (NexTerm built-in, no install needed) ──
+# Renders a colored, segmented prompt similar to Oh My Posh but bundled. Uses
+# 256-color ANSI so it works in any modern terminal without a Nerd Font.
 $global:__nexterm_ESC = [char]27
-if (-not (Test-Path Function:\\__nexterm_origPrompt)) {
-    $function:__nexterm_origPrompt = $function:prompt
+$global:__nexterm_gitCache = @{ dir = ''; branch = $null; dirty = $false; ts = 0 }
+
+function global:__nexterm_pathSegments([string]$full) {
+    if (-not $full) { return @() }
+    # NOTE: $home is a PowerShell automatic read-only variable. Use $userHome
+    # instead — assigning to $home throws and the prompt's try/catch eats it
+    # silently, killing all path rendering.
+    $userHome = $env:USERPROFILE
+    $segments = @()
+    if ($userHome -and $full.ToLower().StartsWith($userHome.ToLower())) {
+        $segments += $userHome
+        $rest = $full.Substring($userHome.Length)
+        $segments += @($rest -split '[\\\\/]' | Where-Object { $_ -ne '' })
+    } else {
+        $segments = @($full -split '[\\\\/]' | Where-Object { $_ -ne '' })
+    }
+    if ($segments.Count -gt 5) {
+        $segments = @($segments[0], '...') + $segments[-2..-1]
+    }
+    return $segments
 }
+
+# Stable color per segment name. Same folder = same color, every time.
+function global:__nexterm_segColor([string]$s) {
+    $palette = @(24, 31, 33, 67, 71, 96, 100, 130, 136, 129, 161, 165)
+    $hash = 0
+    foreach ($c in $s.ToLower().ToCharArray()) { $hash = ($hash * 31 + [int]$c) }
+    if ($hash -lt 0) { $hash = -$hash }
+    return $palette[$hash % $palette.Count]
+}
+
+function global:__nexterm_gitInfo([string]$dir) {
+    # Cache per-directory; only spawn git when we change folder OR every 2s.
+    $now = [int][double]::Parse((Get-Date -UFormat %s))
+    if ($global:__nexterm_gitCache.dir -eq $dir -and ($now - $global:__nexterm_gitCache.ts) -lt 2) {
+        return $global:__nexterm_gitCache
+    }
+    $branch = $null; $dirty = $false
+    try {
+        $branch = git -C $dir symbolic-ref --short HEAD 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $branch) { $branch = $null }
+    } catch {}
+    if ($branch) {
+        try {
+            $st = git -C $dir status --porcelain 2>$null
+            if ($st) { $dirty = $true }
+        } catch {}
+    }
+    $global:__nexterm_gitCache = @{ dir = $dir; branch = $branch; dirty = $dirty; ts = $now }
+    return $global:__nexterm_gitCache
+}
+
 function global:prompt {
+    $esc = $global:__nexterm_ESC
+    $reset = "$esc[0m"
+    [Console]::Out.Write([char]10)  # blank-line separator above prompt
+
+    # Build the time tag once — used by every style
+    $timeTag = ''
     if ($global:__nexterm_showTimer) {
         try {
             $h = Get-History -Count 1 -EA SilentlyContinue
             if ($h -and $h.EndExecutionTime -gt $h.StartExecutionTime) {
                 $d = ($h.EndExecutionTime - $h.StartExecutionTime).TotalMilliseconds
-                $tag = if     ($d -lt 1000)   { "{0,4:0}ms" -f $d }
-                       elseif ($d -lt 60000)  { "{0,4:0.0}s" -f ($d/1000) }
-                       else                   { "{0,4:0.0}m" -f ($d/60000) }
-                Write-Host ("[{0}] " -f $tag) -NoNewline -ForegroundColor DarkGray
+                $timeTag = if     ($d -lt 1000)   { "{0:0}ms" -f $d }
+                           elseif ($d -lt 60000)  { "{0:0.0}s" -f ($d/1000) }
+                           else                   { "{0:0.0}m" -f ($d/60000) }
             }
         } catch {}
     }
+
+    # Current dir + OSC 7 for cwd tracking
     $loc = $null
     try { $loc = (Get-Location -EA SilentlyContinue).ProviderPath } catch {}
     if ($loc) {
         $uri = $loc -replace '\\\\','/' -replace ' ','%20'
-        [Console]::Out.Write("$($global:__nexterm_ESC)]7;file:///$uri$($global:__nexterm_ESC)\\")
+        [Console]::Out.Write("$esc]7;file:///$uri$esc\\")
     }
-    & $function:__nexterm_origPrompt
+
+    switch ($global:__nexterm_promptStyle) {
+        'minimal' {
+            # Plain two-line: "1.3s C:\Users\LOQ" then "❯" on next line.
+            if ($timeTag) { [Console]::Out.Write("$esc[2;37m$timeTag$reset ") }
+            if ($loc)     { [Console]::Out.Write("$esc[38;5;111m$loc$reset") }
+            [Console]::Out.Write([char]10)
+            [Console]::Out.Write("$esc[1;38;5;81m" + [char]10095 + "$reset ")
+        }
+        'pills' {
+            # Two-line: time + colored pills (one per path segment, no arrows),
+            # then ❯ on next line.
+            if ($timeTag) { [Console]::Out.Write("$esc[2;37m$timeTag$reset ") }
+            try {
+                if ($loc) {
+                    $parts = __nexterm_pathSegments $loc
+                    foreach ($seg in $parts) {
+                        $bg = if ($seg -eq '...') { 240 } else { __nexterm_segColor $seg }
+                        [Console]::Out.Write("$esc[48;5;$($bg);38;5;231m $seg $reset ")
+                    }
+                    $g = __nexterm_gitInfo $loc
+                    if ($g.branch) {
+                        $gbg = if ($g.dirty) { 178 } else { 34 }
+                        $marker = if ($g.dirty) { '*' } else { '' }
+                        [Console]::Out.Write("$esc[48;5;$($gbg);38;5;232m  $($g.branch)$marker $reset")
+                    }
+                }
+            } catch {}
+            [Console]::Out.Write([char]10)
+            [Console]::Out.Write("$esc[1;38;5;81m" + [char]10095 + "$reset ")
+        }
+        'classic' {
+            # One-line classic: "[1.3s] PS C:\Users\LOQ>"
+            if ($timeTag) { [Console]::Out.Write("$esc[2;37m[$timeTag]$reset ") }
+            [Console]::Out.Write("$esc[1;36mPS$reset ")
+            if ($loc) { [Console]::Out.Write("$esc[38;5;111m$loc$reset") }
+            [Console]::Out.Write("$esc[1;36m>$reset ")
+        }
+        default {
+            # Powerline (segments + ▶ arrows + ❯ pointer)
+            if ($timeTag) { [Console]::Out.Write("$esc[2;37m[$timeTag]$reset ") }
+            [Console]::Out.Write("$esc[1;36mPS$reset ")
+            $prevBg = $null
+            try {
+                if ($loc) {
+                    $parts = __nexterm_pathSegments $loc
+                    foreach ($seg in $parts) {
+                        $bg = if ($seg -eq '...') { 240 } else { __nexterm_segColor $seg }
+                        if ($null -ne $prevBg) {
+                            [Console]::Out.Write("$esc[48;5;$($bg);38;5;$($prevBg)m" + [char]9658 + "$reset")
+                        }
+                        [Console]::Out.Write("$esc[48;5;$($bg);38;5;231m $seg $reset")
+                        $prevBg = $bg
+                    }
+                }
+                if ($loc) {
+                    $g = __nexterm_gitInfo $loc
+                    if ($g.branch) {
+                        $gbg = if ($g.dirty) { 178 } else { 34 }
+                        $marker = if ($g.dirty) { '*' } else { '' }
+                        if ($null -ne $prevBg) {
+                            [Console]::Out.Write("$esc[48;5;$($gbg);38;5;$($prevBg)m" + [char]9658 + "$reset")
+                        }
+                        [Console]::Out.Write("$esc[48;5;$($gbg);38;5;232m  $($g.branch)$marker $reset")
+                        $prevBg = $gbg
+                    }
+                }
+                if ($null -ne $prevBg) {
+                    [Console]::Out.Write("$esc[38;5;$($prevBg)m" + [char]9658 + "$reset")
+                }
+            } catch {
+                [Console]::Out.Write(" $loc")
+            }
+            [Console]::Out.Write(" $esc[1;38;5;81m" + [char]10095 + "$reset ")
+        }
+    }
+    return ' '
 }
 
 Remove-Item -LiteralPath '${sip}' -Force -EA SilentlyContinue
@@ -557,9 +707,115 @@ Remove-Item -LiteralPath '${sip}' -Force -EA SilentlyContinue
   })
 }
 
+// ─── Banner widgets (Public IP, weather, internet, crypto) ──────────────────
+// Async fetched in background, cached for 5 min. Banner reads cache synchronously.
+const widgetCache = {
+  city: null, country: null,
+  lat: null, lon: null,
+  weatherCode: null, weatherTemp: null,
+  fetchedAt: 0
+}
+async function fetchJson(url, timeoutMs = 4000) {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const r = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'NexTerm/0.1' } })
+    if (!r.ok) return null
+    return await r.json()
+  } catch { return null }
+  finally { clearTimeout(t) }
+}
+async function sampleCpuPct(intervalMs = 200) {
+  const snap = () => os.cpus().map(c => {
+    const total = Object.values(c.times).reduce((a, b) => a + b, 0)
+    return { idle: c.times.idle, total }
+  })
+  const a = snap()
+  await new Promise(r => setTimeout(r, intervalMs))
+  const b = snap()
+  let busy = 0, total = 0
+  for (let i = 0; i < a.length; i++) {
+    const dt = b[i].total - a[i].total
+    const di = b[i].idle  - a[i].idle
+    busy  += dt - di
+    total += dt
+  }
+  return total > 0 ? Math.round((busy / total) * 100) : 0
+}
+function sampleGpuPct() {
+  // Fast path: nvidia-smi for NVIDIA cards
+  return new Promise(resolve => {
+    try {
+      const proc = cpSpawn('nvidia-smi', ['--query-gpu=utilization.gpu','--format=csv,noheader,nounits'], { windowsHide: true })
+      let buf = ''
+      const timer = setTimeout(() => { try { proc.kill() } catch {}; resolve(null) }, 1500)
+      proc.stdout.on('data', d => buf += d.toString())
+      proc.on('close', code => {
+        clearTimeout(timer)
+        if (code !== 0) return resolve(null)
+        const v = parseInt(buf.trim().split(/\r?\n/)[0], 10)
+        resolve(isNaN(v) ? null : v)
+      })
+      proc.on('error', () => { clearTimeout(timer); resolve(null) })
+    } catch { resolve(null) }
+  })
+}
+async function refreshWidgetCache() {
+  const settings = loadSettings()
+  const w = settings.widgets || {}
+  // Weather (needs IP-based geolocation first — one ipapi.co call gives both)
+  if (w.weather !== false) {
+    const ipinfo = await fetchJson('https://ipapi.co/json/')
+    if (ipinfo) {
+      widgetCache.city    = ipinfo.city || null
+      widgetCache.country = ipinfo.country_name || ipinfo.country || null
+      widgetCache.lat     = ipinfo.latitude  ?? null
+      widgetCache.lon     = ipinfo.longitude ?? null
+    }
+    if (widgetCache.lat != null) {
+      const wx = await fetchJson(`https://api.open-meteo.com/v1/forecast?latitude=${widgetCache.lat}&longitude=${widgetCache.lon}&current=temperature_2m,weather_code`)
+      if (wx?.current) {
+        widgetCache.weatherTemp = wx.current.temperature_2m
+        widgetCache.weatherCode = wx.current.weather_code
+      }
+    }
+  }
+  widgetCache.fetchedAt = Date.now()
+}
+// Map open-meteo WMO weather code → single-codepoint glyph + label.
+// Uses basic-plane Unicode (rendered by every monospace font, unlike emoji
+// which require a color-emoji font Cascadia/Consolas don't ship with).
+function weatherEmoji(code) {
+  if (code == null)  return ['·', '—']
+  if (code === 0)    return ['☀', 'Clear']
+  if (code <= 3)     return ['☁', 'Cloudy']
+  if (code <= 48)    return ['≋', 'Fog']
+  if (code <= 57)    return ['☂', 'Drizzle']
+  if (code <= 67)    return ['☂', 'Rain']
+  if (code <= 77)    return ['❄', 'Snow']
+  if (code <= 82)    return ['☂', 'Showers']
+  if (code <= 86)    return ['❄', 'Snow showers']
+  if (code <= 99)    return ['⚡', 'Storm']
+  return ['·', '—']
+}
+
 // ─── Welcome Banner ──────────────────────────────────────────────────────────
 
-const NEXTERM_VERSION = '0.1.0'
+// Read from package.json via Electron's app.getVersion(), so the banner always
+// reflects the actual shipped build instead of a hardcoded literal that drifts.
+const NEXTERM_VERSION = app.getVersion()
+
+// Convert os.release() like "10.0.26200" to the real marketing version.
+// Win11's build number is >= 22000 — Microsoft kept the kernel as 10.0.x
+// internally, which is why os.release() reports "10" for Win11 too.
+function winMarketingVersion() {
+  const rel = os.release() || ''
+  const parts = rel.split('.').map(n => parseInt(n, 10))
+  const major = parts[0], build = parts[2]
+  if (major === 10 && build >= 22000) return `11 (build ${build})`
+  if (major === 10) return `10 (build ${build || rel})`
+  return rel
+}
 
 // Logo art collection — each is an array of pre-colorized ANSI lines.
 const LOGOS = {
@@ -617,7 +873,8 @@ const LOGOS = {
   none: []
 }
 
-const visibleLen = (s) => s.replace(/\x1b\[[0-9;]*m/g, '').length
+// Strip ANSI styling AND our U+001E sentinel markers when measuring visible width.
+const visibleLen = (s) => s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\x1e/g, '').length
 
 function fmtUptime(s) {
   const d = Math.floor(s / 86400)
@@ -640,9 +897,111 @@ function resolveLogo(settings) {
   return LOGOS[key] || LOGOS.nexterm
 }
 
+// Year progress — 12 month dots (past = red, current = highlighted, future =
+// dim) plus a "day N/total" counter. Compact enough to live on one banner line.
+function buildYearProgressLine() {
+  const now = new Date()
+  const year  = now.getFullYear()
+  const start = new Date(year, 0, 1)
+  const end   = new Date(year + 1, 0, 1)
+  const dayOfYear = Math.floor((now - start) / (1000 * 60 * 60 * 24)) + 1
+  const daysInYear = Math.floor((end - start) / (1000 * 60 * 60 * 24))
+  const curMonth = now.getMonth()  // 0..11
+  const Y = '\x1b[1;33m'           // yellow label
+  const Rd = '\x1b[31m'             // dim red for past
+  const Hi = '\x1b[1;36m'           // bright cyan for current
+  const D  = '\x1b[90m'             // dim gray for future
+  const F  = '\x1b[39m', R = '\x1b[0m'
+  let dots = ''
+  for (let m = 0; m < 12; m++) {
+    if (m < curMonth)  dots += `${Rd}●${R}`
+    else if (m === curMonth) dots += `${Hi}◉${R}`
+    else dots += `${D}·${R}`
+  }
+  return `${Y}Year${R}      ${dots} ${D}${dayOfYear}/${daysInYear}${R}`
+}
+
+// Weather inline (rendered after username@hostname on the header line)
+function inlineWeather() {
+  const w = loadSettings().widgets || {}
+  if (w.weather === false) return ''
+  if (widgetCache.weatherTemp == null) return ''
+  const [emoji] = weatherEmoji(widgetCache.weatherCode)
+  const D  = '\x1b[90m', Yl = '\x1b[1;33m', R = '\x1b[0m'
+  const loc = widgetCache.city ? ` ${D}${widgetCache.city}${R}` : ''
+  return `   ${emoji} ${Yl}${Math.round(widgetCache.weatherTemp)}°C${R}${loc}`
+}
+// Compact horizontal bar: ▓-filled / ░-empty, color-graded by percentage.
+function pctBar(pct, width = 6) {
+  if (pct == null) return null
+  const filled = Math.max(0, Math.min(width, Math.round((pct / 100) * width)))
+  const col = pct >= 80 ? '\x1b[1;31m' : pct >= 50 ? '\x1b[1;33m' : '\x1b[1;32m'
+  const D = '\x1b[90m', R = '\x1b[0m'
+  return `${col}${'▓'.repeat(filled)}${R}${D}${'░'.repeat(width - filled)}${R}`
+}
+// (CPU/GPU/RAM load bars now live in the bottom status bar — see StatusBar.jsx)
+
+// Coder / hacker / sci-fi one-liners shown under the "─── NEXTERM ───" label.
+// One is picked at random per new tab so the banner feels alive.
+const CODER_QUOTES = [
+  "ready to rock",
+  "systems nominal",
+  "online · go forth",
+  "init complete",
+  "armed · loaded · go",
+  "compiled with ☕",
+  "in code we trust",
+  "404: bugs not found",
+  "stack overflow free",
+  "kernel breathing fine",
+  "shell ready, captain",
+  "the future is now",
+  "rebooting reality.exe",
+  "rm -rf /worries",
+  "hack the planet",
+  "powered by caffeine",
+  "git gud · ship fast",
+  "make it work, then fast",
+  "engage warp drive",
+  "matrix loaded · enter",
+  "ssh into the unknown",
+  "pwsh wizard online",
+  "to debug, perchance",
+  "neon · dark · ready",
+  "1's and 0's aligned",
+  "daemons sleeping well",
+  "uptime 100% · vibes",
+  "you have the shell",
+  "press any key to ascend",
+  "boot.sequence.success",
+  "listening on :prompt",
+  "0x00 to glory",
+  "runtime initialized",
+  "the cake is a lie",
+  "echo \"hello, world\"",
+  ">_ awaiting input",
+  "just ship it",
+  "pipe dreams realized"
+]
+function pickCoderQuote() {
+  return CODER_QUOTES[Math.floor(Math.random() * CODER_QUOTES.length)]
+}
+
 function generateBanner(themeName = 'tokyonight') {
   const settings = loadSettings()
-  const logo     = resolveLogo(settings) || []
+  const baseLogo = resolveLogo(settings) || []
+  // Append a random coder one-liner centered under the logo, prefixed with a
+  // ❯ chevron. Wrapped in U+001E (Record Separator) sentinels so the PS init
+  // script types it char-by-char on tab open. Italic-dim styling is applied
+  // by the PS animator, not baked into the string here.
+  const baseLogoW = baseLogo.length ? Math.max(...baseLogo.map(visibleLen)) : 0
+  const quoteText = `❯ ${pickCoderQuote()}`
+  const quotePad  = ' '.repeat(Math.max(0, Math.floor((baseLogoW - quoteText.length) / 2)))
+  const SENT      = '\x1e'
+  const quote     = `${quotePad}${SENT}${quoteText}${SENT}`
+  const logo      = baseLogo.length ? [...baseLogo, quote] : baseLogo
+  // CPU/GPU/RAM bars are now live in the bottom status bar — no longer in
+  // the banner where they'd freeze as soon as the user typed anything.
   const cpus     = os.cpus()
   const cpuModel = (cpus[0]?.model || 'Unknown CPU').replace(/\s+/g, ' ').trim()
   const ramT     = os.totalmem()
@@ -657,37 +1016,37 @@ function generateBanner(themeName = 'tokyonight') {
   // F = default foreground (xterm uses theme.foreground — readable in both light + dark themes)
   // Y = bold yellow label  D = dim grey  M = bold magenta
   const Y = '\x1b[1;33m', F = '\x1b[39m', D = '\x1b[90m', M = '\x1b[1;35m', R = '\x1b[0m'
-  const userLine = `${M}${username}${R}${D}@${R}${M}${hostname}${R}`
+  const weatherTail = inlineWeather()
+  const userLine = `${M}${username}${R}${D}@${R}${M}${hostname}${R}${weatherTail}`
   const sepLen   = (username + '@' + hostname).length
   const sep      = `${D}${'─'.repeat(sepLen)}${R}`
 
   const lines = [
     userLine,
     sep,
-    `${Y}OS${R}        ${F}Windows ${winRel} (${arch})${R}`,
-    `${Y}Host${R}      ${F}${hostname}${R}`,
+    `${Y}OS${R}        ${F}Windows ${winMarketingVersion()} (${arch})${R}`,
     `${Y}CPU${R}       ${F}${cpuModel} (${cpus.length})${R}`,
-    `${Y}Memory${R}    ${F}${fmtGiB(ramU)} / ${fmtGiB(ramT)} (${ramPct}%)${R}`,
     `${Y}Uptime${R}    ${F}${fmtUptime(os.uptime())}${R}`,
-    `${Y}Shell${R}     ${F}${(settings.defaultShell || '').split(/[\\/]/).pop()}${R}`,
     `${Y}Mode${R}      ${isElevated() ? '\x1b[1;91mAdmin\x1b[0m' : F + 'User' + R}`,
     `${Y}NexTerm${R}   ${F}v${NEXTERM_VERSION} ${D}·${R} ${F}${themeName}${R}`,
-    '',
-    // Color palette swatches — show off the theme's ANSI colors
-    `\x1b[40m   \x1b[41m   \x1b[42m   \x1b[43m   \x1b[44m   \x1b[45m   \x1b[46m   \x1b[47m   \x1b[0m`,
-    `\x1b[100m   \x1b[101m   \x1b[102m   \x1b[103m   \x1b[104m   \x1b[105m   \x1b[106m   \x1b[107m   \x1b[0m`
+    buildYearProgressLine()
   ]
 
   const out = ['']
   const logoW = logo.length ? Math.max(...logo.map(visibleLen)) : 0
+  const rightW = lines.length ? Math.max(...lines.map(visibleLen)) : 0
   const rows  = Math.max(logo.length, lines.length)
   for (let i = 0; i < rows; i++) {
     const leftRaw = logo[i] || ''
     const leftPad = ' '.repeat(Math.max(0, logoW - visibleLen(leftRaw)))
     const right   = lines[i] || ''
-    const sep     = logoW > 0 ? '    ' : ''
-    out.push(`  ${leftRaw}${leftPad}${sep}${right}`)
+    const colGap  = logoW > 0 ? '    ' : ''
+    out.push(`  ${leftRaw}${leftPad}${colGap}${right}`)
   }
+
+  // Full-width BASE divider — spans both columns, closing off the whole panel.
+  const totalW = 2 + logoW + (logoW > 0 ? 4 : 0) + rightW
+  out.push(`  ${D}${'─'.repeat(Math.max(0, totalW - 2))}${R}`)
   out.push('')
   return out.join('\r\n') + '\r\n'
 }
@@ -1215,6 +1574,17 @@ function setupIPC() {
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }
+  })
+
+  // ─── Live system load (for the bottom status bar bars) ────────────────────
+  // Renderer polls this every ~2s. Reads CPU from a 200ms sample, GPU from
+  // nvidia-smi (when available), RAM from os.* (instant).
+  ipcMain.handle('system:load', async () => {
+    const ramT = os.totalmem(), ramU = ramT - os.freemem()
+    const ramPct = ramT > 0 ? Math.round((ramU / ramT) * 100) : 0
+    // Use the same samplers as the banner widget cache so we don't duplicate.
+    const [cpuPct, gpuPct] = await Promise.all([sampleCpuPct(120), sampleGpuPct()])
+    return { cpu: cpuPct, gpu: gpuPct, ram: ramPct }
   })
 
   // ─── Link preview (HEAD/GET <title>) for hover cards ─────────────────────
@@ -1789,6 +2159,10 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+  // Kick off widget cache refresh in background. First refresh is fire-and-forget
+  // so the first banner shows widgets after a few seconds rather than blocking startup.
+  refreshWidgetCache().catch(() => {})
+  setInterval(() => { refreshWidgetCache().catch(() => {}) }, 5 * 60 * 1000)
 })
 
 app.on('window-all-closed', () => {

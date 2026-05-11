@@ -122,6 +122,10 @@ contextBridge.exposeInMainWorld('nexterm', {
     preview: (url) => ipcRenderer.invoke('link:preview', url)
   },
 
+  system: {
+    load: () => ipcRenderer.invoke('system:load')
+  },
+
   workspace: {
     load: (dir) => ipcRenderer.invoke('workspace:load', dir)
   },

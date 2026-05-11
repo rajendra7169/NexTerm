@@ -333,6 +333,34 @@ body.bg-effect .app-shell { background: transparent; }
 .status-dirty { color: #f97316; margin-left: 2px; }
 .status-warn { color: #f97316; font-weight: 600; }
 
+/* Live CPU/GPU/RAM bars in the status bar — small, color-graded */
+.status-load { gap: 4px; }
+.status-load-label {
+  font-size: 9px;
+  font-weight: 700;
+  opacity: 0.7;
+  letter-spacing: 0.5px;
+}
+.status-load-track {
+  width: 36px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.status-load-fill {
+  display: block;
+  height: 100%;
+  transition: width 0.5s ease, background 0.3s ease;
+}
+.status-load-pct {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  min-width: 26px;
+  text-align: right;
+  opacity: 0.85;
+}
+
 /* ── Tab extras ─────────────────────────────────────────────────────────── */
 .tab-pinned .tab-name { font-weight: 600; }
 .tab-pin, .tab-broadcast { font-size: 10px; margin-right: 4px; }
