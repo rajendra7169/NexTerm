@@ -42,6 +42,8 @@ import StatusBar from './components/StatusBar'
 import SnippetPicker from './components/SnippetPicker'
 import SftpPanel from './components/SftpPanel'
 import FindAllPanel from './components/FindAllPanel'
+import AiChat from './components/AiChat'
+import AiExplain from './components/AiExplain'
 
 export default function App() {
   const { tabs, activeId, settings, setSettings, addTab, removeTab, setActive,
@@ -54,6 +56,7 @@ export default function App() {
   const [showSnippets, setShowSnippets] = useState(false)
   const [showSftp,     setShowSftp]     = useState(false)
   const [showFindAll,  setShowFindAll]  = useState(false)
+  const [showAiChat,   setShowAiChat]   = useState(false)
   const profiles = useStore(s => s.profiles)
   const setProfiles = useStore(s => s.setProfiles)
 
@@ -75,6 +78,21 @@ export default function App() {
       try {
         const list = await window.nexterm.profile.list()
         setProfiles(list || [])
+      } catch {}
+
+      // Auto-start Ollama daemon if user has AI enabled in local mode and
+      // Ollama is installed but not currently running. One-shot, silent —
+      // user never has to click "Start Ollama" again.
+      try {
+        if (s?.ai?.enabled === true && s.ai.mode === 'local') {
+          const ol = await window.nexterm.ai.detectOllama()
+          if (ol?.installed) {
+            const running = await window.nexterm.ai.isOllamaRunning()
+            if (!running) {
+              window.nexterm.ai.startOllama()  // fire-and-forget
+            }
+          }
+        }
       } catch {}
 
       // Apply quake mode setting (registers global shortcut)
@@ -250,6 +268,7 @@ export default function App() {
       if (matchKey(e, getKey(settings, 'snippets'))) { e.preventDefault(); setShowSnippets(s => !s); return }
       if (matchKey(e, getKey(settings, 'sftp')))     { e.preventDefault(); setShowSftp(s => !s); return }
       if (matchKey(e, getKey(settings, 'findAll'))) { e.preventDefault(); setShowFindAll(s => !s); return }
+      if (matchKey(e, getKey(settings, 'aiBar')))   { e.preventDefault(); setShowAiChat(s => !s); return }
       if (matchKey(e, shortcuts.palette))   { e.preventDefault(); setShowPalette(s => !s); return }
       if (matchKey(e, shortcuts.newTab))    { e.preventDefault(); addTab(); return }
       if (matchKey(e, shortcuts.closePane)) { e.preventDefault(); closePane(); return }
@@ -320,20 +339,23 @@ export default function App() {
       />
       <TabBar />
 
-      <div className="terminal-area">
-        {tabs.map(tab => (
-          <div
-            key={tab.id}
-            className={`tab-content ${tab.id === activeId ? '' : 'hidden'}`}
-          >
-            <PaneSplitter
-              pane={tab.root}
-              tabId={tab.id}
-              tabActive={tab.id === activeId}
-              activePaneId={tab.activePane}
-            />
-          </div>
-        ))}
+      <div className="main-area">
+        <div className="terminal-area">
+          {tabs.map(tab => (
+            <div
+              key={tab.id}
+              className={`tab-content ${tab.id === activeId ? '' : 'hidden'}`}
+            >
+              <PaneSplitter
+                pane={tab.root}
+                tabId={tab.id}
+                tabActive={tab.id === activeId}
+                activePaneId={tab.activePane}
+              />
+            </div>
+          ))}
+        </div>
+        {showAiChat && <AiChat onClose={() => setShowAiChat(false)} />}
       </div>
 
       <StatusBar />
@@ -363,6 +385,8 @@ export default function App() {
         />
       )}
       {showFindAll && <FindAllPanel onClose={() => setShowFindAll(false)} />}
+      <AiExplainHost />
+
       {showSftp && (() => {
         const tab = tabs.find(t => t.id === activeId)
         const findLeaf = (p, id) => !p ? null : p.kind === 'leaf' ? (p.id === id ? p : null) : findLeaf(p.a, id) || findLeaf(p.b, id)
@@ -385,5 +409,19 @@ export default function App() {
         return <SftpPanel profile={profile} onClose={() => setShowSftp(false)} />
       })()}
     </div>
+  )
+}
+
+function AiExplainHost() {
+  const ctx = useStore(s => s.aiExplain)
+  if (!ctx) return null
+  return (
+    <AiExplain
+      context={ctx}
+      onClose={() => useStore.setState({ aiExplain: null })}
+      onRunCommand={(cmd) => {
+        if (ctx.paneId && cmd) window.nexterm.pty.write(ctx.paneId, cmd + '\r')
+      }}
+    />
   )
 }

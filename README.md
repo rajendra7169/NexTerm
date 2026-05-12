@@ -4,7 +4,9 @@
 
 # NexTerm
 
-**A modern, feature-rich terminal for Windows — free and built from scratch.**
+**The modern, AI-powered terminal for Windows — free, private, and built from scratch.**
+
+🤖 *Built-in AI chat with terminal context · SSH/SFTP · Recording · Snippets · 19 themes · Workspaces — all in one installer.*
 
 [![Download for Windows](https://img.shields.io/badge/Download-Windows%20Installer-2563eb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/rajendra7169/NexTerm/releases/latest)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20Noncommercial-22c55e?style=for-the-badge)](LICENSE)
@@ -89,6 +91,34 @@ Most "free" Windows terminals are either bare-bones or have feature paywalls hid
 
 ## 🚀 Features
 
+### 🤖 AI Assistant — built right into the terminal
+
+NexTerm has a **side-panel AI chat** that knows what's on your terminal. Press **`Ctrl+Shift+A`** anywhere → chat panel slides in next to your shells, resizing the terminal area (it doesn't overlay).
+
+**What it does**
+
+- **Sees your terminal automatically** — captures the last 30 lines of your active pane on demand, so you can ask *"what does this error mean?"* without copy-pasting anything
+- **Conversational memory** — every chat is saved to a local SQLite database. The AI remembers what you said earlier in the conversation
+- **History dropdown** — resume any previous conversation, rename, delete; full search across all chats
+- **Multi-turn** — ask follow-ups, request rewrites, dig into output
+- **Code-block actions** — every code fence in the AI's reply gets **Copy / Insert / ▶ Run** buttons. One click and the suggested command lands in your terminal
+- **Attach files for context** — drag any file (text, code, log, config, PDF, image up to 2 MB) into the chat; the AI uses it
+- **Resizable side panel + fullscreen toggle** — drag the left edge, or hit ⛶ to expand chat across the whole window
+
+**Three ways to run the model, all free**
+
+| Mode | What it is | Setup | Privacy |
+|---|---|---|---|
+| **☁ Cloud (free tiers)** | Groq, Gemini, Cerebras, OpenRouter — all offer free, no-credit-card tiers | Paste a free API key | Prompt + cwd sent to provider |
+| **💻 Local (Ollama)** | Runs Llama, Qwen, Mistral, Gemma on your own machine | One-click auto-install of Ollama + one-click model pull from inside Settings | 100% on-device |
+| **🛠 Right-click → ✨ Explain & Fix** | Selects the last failing command + output, AI explains and offers a runnable fix | Same as above | Same as above |
+
+**API keys never touch `settings.json`** — they're encrypted with DPAPI (Electron `safeStorage`) and stored in NexTerm's vault.
+
+**Hardware-aware** — Settings → AI detects your CPU/RAM/GPU and recommends the right model tier (S/A/B/C/D) so a low-end laptop doesn't waste hours pulling a 70B model that won't run.
+
+**Privacy controls** — toggle individual context bits (cwd, last command, redact env vars, redact home path). Local mode never sends anything off your machine.
+
 ### 🪟 Window & UX
 - **Tabs and splits** — drag-to-reorder, pin tabs, color-code per project, close protection on multi-tab close
 - **Pane splits** — vertical (`Ctrl+Shift+D`) and horizontal (`Ctrl+Shift+E`) inside any tab
@@ -167,7 +197,8 @@ Most "free" Windows terminals are either bare-bones or have feature paywalls hid
 | Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Jump to tab N | `Ctrl+1` … `Ctrl+9` |
 | Command palette | `Ctrl+Shift+P` |
-| Snippets | `Ctrl+Shift+I` |
+| AI Chat panel | `Ctrl+Shift+A` |
+| Snippets | `Ctrl+Alt+S` |
 | Find in tab | `Ctrl+F` |
 | Find across all tabs | `Ctrl+Shift+F` |
 | Save scrollback | `Ctrl+Shift+S` |

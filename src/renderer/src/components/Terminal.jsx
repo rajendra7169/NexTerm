@@ -578,6 +578,32 @@ export default function Terminal({ pane, tabId, active }) {
             if (!r?.ok) return;
             playReplay(xterm, r.events);
           });
+        } else if (action === "aiExplain") {
+          // Capture last 40 buffer lines as context for the AI explain modal.
+          try {
+            const buf = xterm.buffer.active;
+            const lines = [];
+            const start = Math.max(0, buf.length - 40);
+            for (let i = start; i < buf.length; i++) {
+              const line = buf.getLine(i);
+              if (line) lines.push(line.translateToString(true));
+            }
+            const output = lines.join("\n").replace(/\s+$/, "");
+            // Best-effort extract of the last command: find a prompt char (❯ or >)
+            // and take the text after it.
+            let command = "(unknown)";
+            for (let i = lines.length - 1; i >= 0; i--) {
+              const m = lines[i].match(/[❯>]\s+(.+)$/);
+              if (m && m[1].trim()) { command = m[1].trim(); break; }
+            }
+            useStore.setState({
+              aiExplain: {
+                command, output,
+                cwd: useStore.getState().cwds[id] || "",
+                paneId: id
+              }
+            });
+          } catch (e) { console.error("[aiExplain]", e); }
         }
       },
     );

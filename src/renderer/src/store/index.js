@@ -107,6 +107,25 @@ const DEFAULT_SETTINGS = {
     weather:     true,
     crypto:      false,
     cryptoCoins: ['bitcoin', 'ethereum']
+  },
+
+  // Width of the AI Chat side panel (resizable)
+  aiChatWidth: 420,
+
+  // AI Assistant — Ctrl+Shift+A natural-language command bar
+  ai: {
+    enabled:  false,
+    mode:     'cloud',    // 'cloud' | 'local'
+    cloud:    { provider: 'groq', model: 'llama-3.3-70b-versatile' },
+    local:    { model: 'qwen2.5-coder:7b' },
+    privacy: {
+      sendCwd:           true,    // include "Current directory: …" in context
+      sendShell:         true,    // include shell name
+      sendLastCommand:   true,    // include the previous command (for explain)
+      redactEnvVars:     true,    // strip API_KEY=… and similar from context
+      redactHomePath:    false    // replace C:\Users\<name>\ with ~\
+    }
+    // API keys are stored in the encrypted vault under: ai.<provider>.apiKey
   }
 }
 
@@ -202,6 +221,7 @@ export const useStore = create((set, get) => ({
   settings: DEFAULT_SETTINGS,
   profiles: [],
   cwds: {},     // { paneId: '/current/working/dir' }
+  aiExplain: null,  // transient: { command, output, cwd, paneId } when AI Explain panel should open
 
   setCwd: (paneId, dir) =>
     set(s => ({ cwds: { ...s.cwds, [paneId]: dir } })),

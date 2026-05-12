@@ -14,10 +14,11 @@ export const ACTIONS = [
   { id: 'prevTab',    label: 'Previous Tab',     default: 'Ctrl+Shift+Tab' },
   { id: 'find',             label: 'Search Terminal',     default: 'Ctrl+F' },
   { id: 'toggleAlwaysOnTop', label: 'Toggle Always on Top', default: 'Ctrl+Shift+T' },
-  { id: 'snippets',          label: 'Snippet Picker',       default: 'Ctrl+Shift+I' },
+  { id: 'snippets',          label: 'Snippet Picker',       default: 'Ctrl+Alt+S' },
   { id: 'saveOutput',        label: 'Save Terminal Output', default: 'Ctrl+Shift+S' },
   { id: 'sftp',              label: 'Toggle SFTP Panel',    default: 'Ctrl+Shift+B' },
-  { id: 'findAll',           label: 'Find Across All Tabs', default: 'Ctrl+Shift+F' }
+  { id: 'findAll',           label: 'Find Across All Tabs', default: 'Ctrl+Shift+F' },
+  { id: 'aiBar',             label: 'AI Command Bar',       default: 'Ctrl+Shift+A' }
 ]
 
 export function getKey(settings, id) {

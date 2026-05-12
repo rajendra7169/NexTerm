@@ -8,6 +8,7 @@ import { execSync, spawn as cpSpawn } from 'child_process'
 import { renderText } from './font.js'
 import { Client as SshClient } from 'ssh2'
 import yaml from 'js-yaml'
+import * as ai from './ai/index.js'
 
 const USER_DATA     = app.getPath('userData')
 const DB_PATH       = join(USER_DATA, 'nexterm.db')
@@ -238,6 +239,29 @@ function initDB() {
       created_at      INTEGER NOT NULL,
       updated_at      INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS ai_conversations (
+      id          TEXT    PRIMARY KEY,
+      title       TEXT    NOT NULL,
+      provider    TEXT    NOT NULL,
+      model       TEXT    NOT NULL,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ai_conv_updated ON ai_conversations(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS ai_messages (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT    NOT NULL,
+      role            TEXT    NOT NULL,       -- 'user' | 'assistant' | 'system'
+      content         TEXT    NOT NULL,
+      attachments     TEXT,                   -- JSON array of {name, type, size, snippet}
+      created_at      INTEGER NOT NULL,
+      FOREIGN KEY(conversation_id) REFERENCES ai_conversations(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ai_msg_conv ON ai_messages(conversation_id, created_at);
   `)
 
   // Schema migrations for existing installs that predate these columns.
@@ -1576,6 +1600,134 @@ function setupIPC() {
     }
   })
 
+  // ─── AI ───────────────────────────────────────────────────────────────────
+  ipcMain.handle('ai:detectHardware', () => {
+    const hw = ai.detectHardware()
+    return { hardware: hw, recommendation: ai.recommendTier(hw) }
+  })
+  ipcMain.handle('ai:detectOllama',     () => ai.detectOllama())
+  ipcMain.handle('ai:isOllamaRunning',  () => ai.isOllamaRunning())
+  ipcMain.handle('ai:listLocalModels',  () => ai.listLocalModels())
+  ipcMain.handle('ai:complete', async (_, opts) => {
+    try {
+      const text = await ai.complete(opts || {})
+      return { ok: true, text }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+  ipcMain.handle('ai:testProvider', (_, opts) => ai.testProvider(opts || {}))
+  ipcMain.handle('ai:systemPrompts', () => ai.SYSTEM_PROMPTS)
+
+  // ── AI conversation history (SQLite-backed, persists across restarts) ──
+  ipcMain.handle('ai:conv:list', () =>
+    db.prepare('SELECT id, title, provider, model, created_at, updated_at FROM ai_conversations ORDER BY updated_at DESC LIMIT 200').all()
+  )
+  ipcMain.handle('ai:conv:create', (_, { title, provider, model } = {}) => {
+    const id = `c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const now = Date.now()
+    db.prepare(`INSERT INTO ai_conversations (id, title, provider, model, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id, title || 'New chat', provider || 'groq', model || 'llama-3.3-70b-versatile', now, now)
+    return db.prepare('SELECT * FROM ai_conversations WHERE id = ?').get(id)
+  })
+  ipcMain.handle('ai:conv:rename', (_, { id, title } = {}) => {
+    db.prepare('UPDATE ai_conversations SET title = ?, updated_at = ? WHERE id = ?').run(title || 'Untitled', Date.now(), id)
+    return { ok: true }
+  })
+  ipcMain.handle('ai:conv:delete', (_, id) => {
+    db.prepare('DELETE FROM ai_conversations WHERE id = ?').run(id)
+    return { ok: true }
+  })
+  ipcMain.handle('ai:msg:list', (_, conversationId) =>
+    db.prepare('SELECT id, role, content, attachments, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY created_at ASC, id ASC').all(conversationId)
+      .map(r => ({ ...r, attachments: r.attachments ? JSON.parse(r.attachments) : [] }))
+  )
+  ipcMain.handle('ai:msg:append', (_, { conversationId, role, content, attachments } = {}) => {
+    const now = Date.now()
+    const res = db.prepare(`INSERT INTO ai_messages (conversation_id, role, content, attachments, created_at)
+                            VALUES (?, ?, ?, ?, ?)`)
+      .run(conversationId, role, content, attachments ? JSON.stringify(attachments) : null, now)
+    db.prepare('UPDATE ai_conversations SET updated_at = ? WHERE id = ?').run(now, conversationId)
+    return { id: res.lastInsertRowid, created_at: now }
+  })
+  // Attach a file from disk — returns metadata + text snippet (first 50 KB for text/PDF).
+  ipcMain.handle('ai:file:pick', async () => {
+    const r = await dialog.showOpenDialog(mainWindow, {
+      title: 'Attach to AI chat',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Text & code', extensions: ['txt', 'md', 'json', 'yml', 'yaml', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'rb', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'sh', 'ps1', 'css', 'html', 'log', 'ini', 'toml', 'env'] },
+        { name: 'PDF',         extensions: ['pdf'] },
+        { name: 'Images',      extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
+        { name: 'All files',   extensions: ['*'] }
+      ]
+    })
+    if (r.canceled || !r.filePaths?.[0]) return { ok: false, canceled: true }
+    const path = r.filePaths[0]
+    try {
+      const stat = require('fs').statSync(path)
+      const name = require('path').basename(path)
+      const ext  = require('path').extname(path).slice(1).toLowerCase()
+      const sizeMb = stat.size / (1024 * 1024)
+      if (sizeMb > 2) {
+        return { ok: false, error: `File is ${sizeMb.toFixed(1)} MB — too big. Limit is 2 MB for AI context.` }
+      }
+      // For images and binary, return base64 (caller decides what to do)
+      if (['png','jpg','jpeg','gif','webp'].includes(ext)) {
+        const buf = require('fs').readFileSync(path)
+        return {
+          ok: true,
+          name, path, ext, size: stat.size,
+          kind: 'image',
+          dataBase64: buf.toString('base64')
+        }
+      }
+      // Everything else: try to read as text (PDF text-extraction deferred to Phase 2)
+      const text = require('fs').readFileSync(path, 'utf8')
+      return {
+        ok: true,
+        name, path, ext, size: stat.size,
+        kind: 'text',
+        text: text.length > 50000 ? text.slice(0, 50000) + '\n…[truncated]' : text
+      }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  // Auto-install Ollama. Streams progress to renderer via 'ai:installProgress'.
+  // After install completes, tries to start the daemon automatically so the
+  // user doesn't have to figure out "now what".
+  ipcMain.handle('ai:installOllama', async () => {
+    try {
+      await ai.installOllama((p) => safeSend('ai:installProgress', p))
+      // Give Windows a beat to wire up PATH after install
+      await new Promise(r => setTimeout(r, 1500))
+      const start = await ai.startOllama({ timeoutMs: 15_000 })
+      return { ok: true, daemonStarted: start.ok }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  // Start the Ollama daemon (if installed but not running).
+  ipcMain.handle('ai:startOllama', () => ai.startOllama())
+
+  // Pull a model. Streams progress via 'ai:pullProgress'.
+  ipcMain.handle('ai:pullModel', async (_, name) => {
+    try {
+      await ai.pullModel(name, (p) => safeSend('ai:pullProgress', { name, ...p }))
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
+  ipcMain.handle('ai:deleteModel', async (_, name) => {
+    try { return { ok: await ai.deleteModel(name) } } catch (e) { return { ok: false, error: String(e?.message || e) } }
+  })
+
   // ─── Live system load (for the bottom status bar bars) ────────────────────
   // Renderer polls this every ~2s. Reads CPU from a 200ms sample, GPU from
   // nvidia-smi (when available), RAM from os.* (instant).
@@ -2012,6 +2164,8 @@ function setupIPC() {
         ? { label: 'Stop Recording',  click: () => safeSend('ctx:action', { action: 'recordStop',  tabId }) }
         : { label: 'Start Recording…', click: () => safeSend('ctx:action', { action: 'recordStart', tabId }) },
       { label: 'Replay File…',  click: () => safeSend('ctx:action', { action: 'replayOpen', tabId }) },
+      { type: 'separator' },
+      { label: '✨ Explain & Fix (AI)', click: () => safeSend('ctx:action', { action: 'aiExplain', tabId }) },
       { type: 'separator' },
       { label: 'Clear',      click: () => safeSend('ctx:action', { action: 'clear', tabId }) },
       { label: 'Select All', click: () => safeSend('ctx:action', { action: 'selectAll', tabId }) }

@@ -126,6 +126,38 @@ contextBridge.exposeInMainWorld('nexterm', {
     load: () => ipcRenderer.invoke('system:load')
   },
 
+  ai: {
+    detectHardware:  ()      => ipcRenderer.invoke('ai:detectHardware'),
+    detectOllama:    ()      => ipcRenderer.invoke('ai:detectOllama'),
+    isOllamaRunning: ()      => ipcRenderer.invoke('ai:isOllamaRunning'),
+    listLocalModels: ()      => ipcRenderer.invoke('ai:listLocalModels'),
+    complete:        (opts)  => ipcRenderer.invoke('ai:complete', opts),
+    testProvider:    (opts)  => ipcRenderer.invoke('ai:testProvider', opts),
+    systemPrompts:   ()      => ipcRenderer.invoke('ai:systemPrompts'),
+    installOllama:   ()      => ipcRenderer.invoke('ai:installOllama'),
+    startOllama:     ()      => ipcRenderer.invoke('ai:startOllama'),
+    pullModel:       (name)  => ipcRenderer.invoke('ai:pullModel', name),
+    deleteModel:     (name)  => ipcRenderer.invoke('ai:deleteModel', name),
+    onInstallProgress: (cb) => {
+      const fn = (_, p) => cb(p)
+      ipcRenderer.on('ai:installProgress', fn)
+      return () => ipcRenderer.removeListener('ai:installProgress', fn)
+    },
+    onPullProgress: (cb) => {
+      const fn = (_, p) => cb(p)
+      ipcRenderer.on('ai:pullProgress', fn)
+      return () => ipcRenderer.removeListener('ai:pullProgress', fn)
+    },
+    // Conversation history
+    convList:   ()       => ipcRenderer.invoke('ai:conv:list'),
+    convCreate: (opts)   => ipcRenderer.invoke('ai:conv:create', opts),
+    convRename: (opts)   => ipcRenderer.invoke('ai:conv:rename', opts),
+    convDelete: (id)     => ipcRenderer.invoke('ai:conv:delete', id),
+    msgList:    (convId) => ipcRenderer.invoke('ai:msg:list', convId),
+    msgAppend:  (opts)   => ipcRenderer.invoke('ai:msg:append', opts),
+    pickFile:   ()       => ipcRenderer.invoke('ai:file:pick')
+  },
+
   workspace: {
     load: (dir) => ipcRenderer.invoke('workspace:load', dir)
   },

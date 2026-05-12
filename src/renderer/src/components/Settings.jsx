@@ -24,7 +24,7 @@ const FONTS = [
   'Inconsolata',
 ]
 
-const SECTIONS = ['Appearance', 'Window', 'Startup', 'Font', 'Terminal', 'Shell', 'Aliases', 'Bookmarks', 'Snippets', 'Workspaces', 'Notifications', 'Vault', 'History', 'Shortcuts', 'Config']
+const SECTIONS = ['Appearance', 'Window', 'Startup', 'Font', 'Terminal', 'Shell', 'AI', 'Aliases', 'Bookmarks', 'Snippets', 'Workspaces', 'Notifications', 'Vault', 'History', 'Shortcuts', 'Config']
 
 const SHELL_PRESETS = [
   { value: 'powershell.exe',                          label: 'PowerShell' },
@@ -1592,6 +1592,9 @@ export default function Settings({ onClose }) {
           {/* ── Bookmarks ── */}
           {section === 'Bookmarks' && <BookmarksSection settings={settings} set={set} />}
 
+          {/* ── AI ── */}
+          {section === 'AI' && <AiSection settings={settings} set={set} />}
+
           {/* ── Snippets ── */}
           {section === 'Snippets' && <SnippetsSection settings={settings} set={set} />}
 
@@ -1953,6 +1956,414 @@ function BannerWidgetsRows({ settings, set }) {
           </div>
           <Toggle checked={w.weather !== false} onChange={v => upd({ weather: v })} />
         </div>
+      </div>
+    </div>
+  )
+}
+
+const CLOUD_PROVIDERS = [
+  { id: 'groq',       label: 'Groq (free, ~30 req/min, very fast)',  defaultModel: 'llama-3.3-70b-versatile',           keyUrl: 'https://console.groq.com/keys' },
+  { id: 'gemini',     label: 'Google Gemini (free, 1500/day)',       defaultModel: 'gemini-2.0-flash',                  keyUrl: 'https://aistudio.google.com/app/apikey' },
+  { id: 'cerebras',   label: 'Cerebras (free, ultra-fast)',           defaultModel: 'llama-3.3-70b',                     keyUrl: 'https://cloud.cerebras.ai' },
+  { id: 'openrouter', label: 'OpenRouter (gateway, free models)',     defaultModel: 'meta-llama/llama-3.3-70b-instruct:free', keyUrl: 'https://openrouter.ai/keys' }
+]
+
+function AiSection({ settings, set }) {
+  const ai = settings.ai || { enabled: false, mode: 'cloud',
+    cloud: { provider: 'groq', model: 'llama-3.3-70b-versatile' },
+    local: { model: 'qwen2.5-coder:7b' },
+    privacy: { sendCwd: true, sendShell: true, sendLastCommand: true, redactEnvVars: true, redactHomePath: false } }
+
+  const [hw, setHw]       = useState(null)
+  const [ollama, setOllama] = useState(null)
+  const [localModels, setLocalModels] = useState([])
+  const [apiKey,  setApiKey]  = useState('')
+  const [testResult, setTestResult] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [installProgress, setInstallProgress] = useState(null)
+  const [pullProgress, setPullProgress] = useState(null)
+
+  function upd(patch) { set({ ai: { ...ai, ...patch } }) }
+  function updCloud(patch) { upd({ cloud: { ...(ai.cloud || {}), ...patch } }) }
+  function updLocal(patch) { upd({ local: { ...(ai.local || {}), ...patch } }) }
+  function updPrivacy(patch) { upd({ privacy: { ...(ai.privacy || {}), ...patch } }) }
+
+  const [ollamaRunning, setOllamaRunning] = useState(false)
+  function refreshOllama() {
+    window.nexterm.ai.detectOllama().then(setOllama)
+    window.nexterm.ai.isOllamaRunning().then(setOllamaRunning)
+    window.nexterm.ai.listLocalModels().then(setLocalModels)
+  }
+
+  async function startOllama() {
+    setBusy(true)
+    const r = await window.nexterm.ai.startOllama()
+    setBusy(false)
+    if (r.ok) {
+      setTestResult({ ok: true, msg: r.alreadyRunning ? 'Daemon already running.' : 'Daemon started.' })
+    } else {
+      setTestResult({ ok: false, msg: r.error || 'Failed to start daemon' })
+    }
+    refreshOllama()
+  }
+
+  useEffect(() => {
+    window.nexterm.ai.detectHardware().then(setHw)
+    refreshOllama()
+    const offInstall = window.nexterm.ai.onInstallProgress(setInstallProgress)
+    const offPull    = window.nexterm.ai.onPullProgress(setPullProgress)
+    return () => { offInstall?.(); offPull?.() }
+  }, [])
+
+  async function installOllama() {
+    setBusy(true); setInstallProgress({ phase: 'starting', percent: 0 })
+    const r = await window.nexterm.ai.installOllama()
+    setBusy(false)
+    setInstallProgress(r.ok ? { phase: 'done', percent: 100 } : null)
+    if (!r.ok) setTestResult({ ok: false, msg: r.error })
+    refreshOllama()
+  }
+
+  async function pullModel(name) {
+    if (!name) return
+    setBusy(true); setPullProgress({ status: 'starting', percent: 0 })
+    const r = await window.nexterm.ai.pullModel(name)
+    setBusy(false)
+    if (!r.ok) setTestResult({ ok: false, msg: r.error })
+    setPullProgress(null)
+    refreshOllama()
+  }
+
+  const provider = ai.mode === 'local' ? 'ollama' : (ai.cloud?.provider || 'groq')
+
+  // Load any saved API key for the active cloud provider
+  useEffect(() => {
+    if (ai.mode !== 'cloud') return
+    window.nexterm.vault.get(`ai.${provider}.apiKey`).then(k => setApiKey(k || ''))
+  }, [provider, ai.mode])
+
+  async function saveApiKey() {
+    if (!apiKey.trim()) return
+    setBusy(true)
+    try {
+      await window.nexterm.vault.set({
+        name: `ai.${provider}.apiKey`,
+        value: apiKey.trim(),
+        description: `AI API key for ${provider}`
+      })
+      setTestResult({ ok: true, msg: 'Key saved to encrypted vault.' })
+    } catch (e) {
+      setTestResult({ ok: false, msg: String(e?.message || e) })
+    }
+    setBusy(false)
+  }
+
+  async function testConnection() {
+    setBusy(true); setTestResult(null)
+    try {
+      let key = null
+      if (ai.mode === 'cloud') {
+        key = apiKey.trim() || await window.nexterm.vault.get(`ai.${provider}.apiKey`)
+      }
+      const r = await window.nexterm.ai.testProvider({ provider, apiKey: key })
+      setTestResult(r.ok ? { ok: true, msg: 'Connection successful.' }
+                         : { ok: false, msg: r.error || 'Failed' })
+    } catch (e) {
+      setTestResult({ ok: false, msg: String(e?.message || e) })
+    }
+    setBusy(false)
+  }
+
+  async function testGeneration() {
+    setBusy(true); setTestResult({ ok: true, msg: 'Generating a test response… (this proves the full inference pipeline works)' })
+    try {
+      const mode    = ai.mode || 'cloud'
+      const provider2 = mode === 'local' ? 'ollama' : (ai.cloud?.provider || 'groq')
+      const model2  = mode === 'local' ? (ai.local?.model || 'qwen2.5-coder:7b')
+                                       : (ai.cloud?.model || 'llama-3.3-70b-versatile')
+      let key = null
+      if (mode === 'cloud') {
+        key = await window.nexterm.vault.get(`ai.${provider2}.apiKey`)
+        if (!key) { setTestResult({ ok: false, msg: 'No API key — save one first.' }); setBusy(false); return }
+      }
+      const t0 = Date.now()
+      const r = await window.nexterm.ai.complete({
+        provider: provider2, model: model2, apiKey: key,
+        prompt: 'Reply with exactly the three words: hello from nexterm',
+        system: 'You are a terse test assistant. Reply with the exact words requested.'
+      })
+      const dt = ((Date.now() - t0) / 1000).toFixed(1)
+      if (r.ok) setTestResult({ ok: true,  msg: `✓ Response in ${dt}s: "${(r.text || '').slice(0, 200)}"` })
+      else      setTestResult({ ok: false, msg: r.error || 'No response' })
+    } catch (e) {
+      setTestResult({ ok: false, msg: String(e?.message || e) })
+    }
+    setBusy(false)
+  }
+
+  return (
+    <div className="settings-group">
+      <div className="settings-row">
+        <div>
+          <div className="settings-label">Enable AI</div>
+          <div className="settings-desc">Press <code>Ctrl+Shift+A</code> to open the natural-language command bar in any tab.</div>
+        </div>
+        <Toggle checked={ai.enabled === true} onChange={v => upd({ enabled: v })} />
+      </div>
+
+      {hw && (
+        <div className="settings-subcard" style={{ padding: 12 }}>
+          <div className="settings-label" style={{ marginBottom: 8 }}>Your hardware</div>
+          <div style={{ fontSize: 11, opacity: 0.85, lineHeight: 1.7, fontFamily: 'monospace' }}>
+            <div>CPU: {hw.hardware.cpu.model} ({hw.hardware.cpu.cores} cores)</div>
+            <div>RAM: {hw.hardware.ram.totalGb} GB total · {hw.hardware.ram.freeGb} GB free</div>
+            <div>GPU: {hw.hardware.gpu
+              ? `${hw.hardware.gpu.name} · ${(hw.hardware.gpu.vramMb/1024).toFixed(1)} GB VRAM`
+              : '(none detected)'}</div>
+          </div>
+          <div style={{ marginTop: 10, padding: 8, background: 'var(--surface)', borderRadius: 4, fontSize: 11 }}>
+            <strong>Tier {hw.recommendation.tier} — {hw.recommendation.label}</strong>
+            <div style={{ opacity: 0.75, marginTop: 2 }}>{hw.recommendation.note}</div>
+            {hw.recommendation.model && (
+              <div style={{ marginTop: 4, opacity: 0.75 }}>
+                Recommended local model: <code>{hw.recommendation.model}</code>
+                {' '}({hw.recommendation.sizeGb} GB · {hw.recommendation.expectedSpeed})
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="settings-row">
+        <div>
+          <div className="settings-label">Mode</div>
+          <div className="settings-desc">Pick where AI runs. Cloud is fastest with free tiers; local is private but needs Ollama installed.</div>
+        </div>
+        <div className="cursor-opts">
+          {['cloud', 'local'].map(m => (
+            <button
+              key={m}
+              className={`cursor-opt ${ai.mode === m ? 'active' : ''}`}
+              onClick={() => upd({ mode: m })}
+            >
+              {m === 'cloud' ? 'Cloud (free)' : 'Local (Ollama)'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {ai.mode === 'cloud' && (() => {
+        const provInfo = CLOUD_PROVIDERS.find(p => p.id === (ai.cloud?.provider || 'groq')) || CLOUD_PROVIDERS[0]
+        return (
+        <>
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Provider</div>
+              <div className="settings-desc">All listed here have generous free tiers. Pick one and grab a free API key.</div>
+            </div>
+            <select
+              className="settings-select"
+              value={ai.cloud?.provider || 'groq'}
+              onChange={e => {
+                const next = CLOUD_PROVIDERS.find(p => p.id === e.target.value) || CLOUD_PROVIDERS[0]
+                updCloud({ provider: next.id, model: next.defaultModel })
+              }}
+              style={{ minWidth: 260 }}
+            >
+              {CLOUD_PROVIDERS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Model</div>
+              <div className="settings-desc">Default for {provInfo.id} is <code>{provInfo.defaultModel}</code>. Override here if you want a different one.</div>
+            </div>
+            <input
+              className="settings-input"
+              style={{ minWidth: 260 }}
+              value={ai.cloud?.model || provInfo.defaultModel}
+              onChange={e => updCloud({ model: e.target.value })}
+            />
+          </div>
+          <div className="settings-row" style={{ alignItems: 'flex-start' }}>
+            <div style={{ flex: 1 }}>
+              <div className="settings-label">API Key</div>
+              <div className="settings-desc">Stored encrypted in your NexTerm vault — never in plain settings.json.</div>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexDirection: 'column', alignItems: 'flex-end' }}>
+              <input
+                className="settings-input"
+                type="password"
+                placeholder={provInfo.id === 'groq' ? 'gsk_...' : provInfo.id === 'gemini' ? 'AIza...' : '...'}
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+                style={{ minWidth: 260 }}
+              />
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <button className="btn-secondary" onClick={() => window.nexterm.shell.open(provInfo.keyUrl)}>Get free key ↗</button>
+                <button className="btn-secondary" onClick={testConnection} disabled={busy}>Test key</button>
+                <button className="btn-secondary" onClick={testGeneration} disabled={busy}>Test generation</button>
+                <button className="btn-primary"   onClick={saveApiKey}     disabled={busy || !apiKey.trim()}>Save</button>
+              </div>
+            </div>
+          </div>
+        </>
+        )
+      })()}
+
+      {ai.mode === 'local' && (
+        <>
+          <div className="settings-subcard" style={{ padding: 12 }}>
+            <div className="settings-label" style={{ marginBottom: 6 }}>Ollama status</div>
+            <div style={{ fontSize: 11 }}>
+              {!ollama?.installed
+                ? <span style={{ color: '#ef4444' }}>✗ Not installed</span>
+                : ollamaRunning
+                  ? <span style={{ color: '#22c55e' }}>✓ Installed{ollama.version ? ` (v${ollama.version})` : ''} · daemon running</span>
+                  : <span style={{ color: '#eab308' }}>● Installed{ollama.version ? ` (v${ollama.version})` : ''}, but daemon not running</span>}
+            </div>
+            {ollama?.installed && !ollamaRunning && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button className="btn-primary" onClick={startOllama} disabled={busy}>▶ Start Ollama</button>
+                <button className="btn-secondary" onClick={refreshOllama}>Re-check</button>
+              </div>
+            )}
+            {!ollama?.installed && (
+              <>
+                <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button className="btn-primary" onClick={installOllama} disabled={busy}>
+                    {busy && installProgress?.phase === 'downloading' ? 'Installing…' : '⬇ Auto-install Ollama'}
+                  </button>
+                  <button className="btn-secondary" onClick={() => window.nexterm.shell.open('https://ollama.com/download')}>
+                    Manual download ↗
+                  </button>
+                  <button className="btn-secondary" onClick={refreshOllama}>Re-check</button>
+                </div>
+                {installProgress && (
+                  <div style={{ marginTop: 10, fontSize: 11 }}>
+                    <div style={{ opacity: 0.7, marginBottom: 4 }}>
+                      {installProgress.phase === 'downloading'
+                        ? `Downloading installer… ${installProgress.percent.toFixed(0)}% (${(installProgress.downloaded/1e6).toFixed(1)} / ${(installProgress.total/1e6).toFixed(1)} MB · ${(installProgress.speedBytesPerSec/1e6).toFixed(1)} MB/s)`
+                        : installProgress.phase === 'installing' ? 'Running silent install…'
+                        : installProgress.phase === 'done' ? '✓ Installed' : 'Starting…'}
+                    </div>
+                    <div style={{ height: 4, background: 'var(--surface)', borderRadius: 2, overflow: 'hidden' }}>
+                      <div style={{ width: `${installProgress.percent || 0}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.2s' }} />
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="settings-row" style={{ alignItems: 'flex-start' }}>
+            <div>
+              <div className="settings-label">Local model</div>
+              <div className="settings-desc">Pick a downloaded model, or pull a new one with one click.</div>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexDirection: 'column', alignItems: 'flex-end' }}>
+              <select
+                className="settings-select"
+                value={ai.local?.model || 'qwen2.5-coder:7b'}
+                onChange={e => updLocal({ model: e.target.value })}
+                style={{ minWidth: 260 }}
+              >
+                {(localModels.length === 0
+                  ? [<option key="default" value={ai.local?.model || 'qwen2.5-coder:7b'}>{ai.local?.model || 'qwen2.5-coder:7b (not yet downloaded)'}</option>]
+                  : localModels.map(m => (
+                      <option key={m.name} value={m.name}>{m.name} ({m.sizeGb} GB)</option>
+                    )))}
+              </select>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  className="btn-primary"
+                  onClick={() => pullModel(ai.local?.model || 'qwen2.5-coder:7b')}
+                  disabled={busy || !ollama?.installed}
+                >
+                  ⬇ Pull model
+                </button>
+                <button className="btn-secondary" onClick={refreshOllama}>Refresh list</button>
+              </div>
+            </div>
+          </div>
+
+          {pullProgress && (
+            <div className="settings-subcard" style={{ padding: 10 }}>
+              <div style={{ fontSize: 11, opacity: 0.8 }}>
+                Pulling <code>{pullProgress.name || ai.local?.model}</code> — {pullProgress.status}
+                {pullProgress.total > 0 && ` · ${pullProgress.percent.toFixed(0)}% (${(pullProgress.completed/1e9).toFixed(2)} / ${(pullProgress.total/1e9).toFixed(2)} GB)`}
+              </div>
+              <div style={{ height: 4, background: 'var(--surface)', borderRadius: 2, overflow: 'hidden', marginTop: 6 }}>
+                <div style={{ width: `${pullProgress.percent || 0}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.2s' }} />
+              </div>
+            </div>
+          )}
+
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Connection</div>
+              <div className="settings-desc">Tests that the Ollama daemon is reachable on localhost:11434</div>
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className="btn-secondary" onClick={testConnection} disabled={busy}>Test API</button>
+              <button className="btn-primary"   onClick={testGeneration} disabled={busy}>Test generation</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {testResult && (
+        <div className={`settings-subcard`} style={{ padding: 10, color: testResult.ok ? '#22c55e' : '#ef4444' }}>
+          {testResult.ok ? '✓ ' : '⚠ '}{testResult.msg}
+        </div>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        <div className="settings-label">Privacy</div>
+        <div className="settings-desc" style={{ marginBottom: 6 }}>
+          Control exactly what NexTerm sends to your AI provider. Local Ollama never leaves your machine; cloud providers see only what you allow below.
+        </div>
+        <div className="settings-subcard">
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Send current directory</div>
+              <div className="settings-desc">Include "Current directory: …" so the AI can suggest path-aware commands.</div>
+            </div>
+            <Toggle checked={(ai.privacy?.sendCwd) !== false} onChange={v => updPrivacy({ sendCwd: v })} />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Send shell name</div>
+              <div className="settings-desc">Tells the AI you're on PowerShell so it generates the right syntax.</div>
+            </div>
+            <Toggle checked={(ai.privacy?.sendShell) !== false} onChange={v => updPrivacy({ sendShell: v })} />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Send last command (Explain & Fix)</div>
+              <div className="settings-desc">When asking AI to explain an error, include the command that produced it.</div>
+            </div>
+            <Toggle checked={(ai.privacy?.sendLastCommand) !== false} onChange={v => updPrivacy({ sendLastCommand: v })} />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Redact secrets</div>
+              <div className="settings-desc">Replace <code>API_KEY=…</code>, <code>TOKEN=…</code>, GitHub/OpenAI/Groq tokens, etc. before sending output. Recommended ON.</div>
+            </div>
+            <Toggle checked={(ai.privacy?.redactEnvVars) !== false} onChange={v => updPrivacy({ redactEnvVars: v })} />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Redact home path</div>
+              <div className="settings-desc">Replace <code>C:\Users\YourName\…</code> with <code>~\…</code> when sending paths.</div>
+            </div>
+            <Toggle checked={(ai.privacy?.redactHomePath) === true} onChange={v => updPrivacy({ redactHomePath: v })} />
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-desc" style={{ marginTop: 12, opacity: 0.55 }}>
+        AI runs only when you explicitly invoke it (Ctrl+Shift+A or right-click → Explain & Fix). Nothing is sent automatically.
       </div>
     </div>
   )
