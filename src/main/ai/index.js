@@ -23,13 +23,33 @@ with newlines. Never include "PS>" or other prompt prefixes.`,
   // Explain an error from terminal output
   explain: `You are a helpful terminal assistant. The user pasted output from a failed command.
 Explain in plain language what went wrong (under 200 words) and suggest the most likely
-fix as a single concrete command. Format as: a short paragraph, then a fenced "fix" block.`
+fix as a single concrete command. Format as: a short paragraph, then a fenced "fix" block.`,
+
+  // Inline ghost-text autocomplete. Must complete the partial command — do NOT
+  // re-output what the user already typed. One short single-line completion only.
+  autocomplete: `You are an inline command-completer for Windows PowerShell.
+The user has typed a partial command. Complete it with the SINGLE most likely continuation.
+Output ONLY the characters needed to finish the command — do NOT repeat what the user typed,
+do NOT include explanation, markdown, quotes, or newlines. If you cannot guess confidently,
+reply with the single character: ?`
 }
 
-export async function complete({ provider, prompt, system, model, apiKey }) {
+export async function complete({ provider, prompt, system, images, model, apiKey }) {
   const p = PROVIDERS[provider]
   if (!p) throw new Error(`Unknown AI provider: ${provider}`)
-  return p.complete({ prompt, system, model, apiKey })
+  return p.complete({ prompt, system, images, model, apiKey })
+}
+
+export async function* streamComplete({ provider, prompt, system, images, model, apiKey, signal }) {
+  const p = PROVIDERS[provider]
+  if (!p) throw new Error(`Unknown AI provider: ${provider}`)
+  if (!p.streamComplete) {
+    // Provider doesn't support streaming — fall back to non-streaming, yield once
+    const text = await p.complete({ prompt, system, images, model, apiKey })
+    yield text
+    return
+  }
+  yield* p.streamComplete({ prompt, system, images, model, apiKey, signal })
 }
 
 export async function testProvider({ provider, apiKey }) {

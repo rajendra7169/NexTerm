@@ -1,6 +1,6 @@
 {
   "name": "nexterm",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "NexTerm – A modern, feature-rich terminal for Windows",
   "author": "Rajendra Pandey <rajendrapandey199971@gmail.com>",
   "license": "SEE LICENSE IN LICENSE",
@@ -13,11 +13,14 @@
     "rebuild": "electron-rebuild"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@xterm/addon-image": "^0.9.0",
     "better-sqlite3": "^9.4.3",
     "js-yaml": "^4.1.1",
     "koffi": "^2.16.1",
+    "monaco-editor": "^0.55.1",
     "node-pty": "^1.0.0",
+    "pdfjs-dist": "^5.7.284",
     "ssh2": "^1.17.0"
   },
   "devDependencies": {

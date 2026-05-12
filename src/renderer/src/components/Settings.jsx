@@ -24,7 +24,7 @@ const FONTS = [
   'Inconsolata',
 ]
 
-const SECTIONS = ['Appearance', 'Window', 'Startup', 'Font', 'Terminal', 'Shell', 'AI', 'Aliases', 'Bookmarks', 'Snippets', 'Workspaces', 'Notifications', 'Vault', 'History', 'Shortcuts', 'Config']
+const SECTIONS = ['Appearance', 'Window', 'Startup', 'Font', 'Terminal', 'Shell', 'AI', 'Coder', 'Aliases', 'Bookmarks', 'Snippets', 'Workspaces', 'Notifications', 'Vault', 'History', 'Shortcuts', 'Config']
 
 const SHELL_PRESETS = [
   { value: 'powershell.exe',                          label: 'PowerShell' },
@@ -1037,6 +1037,17 @@ export default function Settings({ onClose }) {
 
               <div className="settings-row">
                 <div>
+                  <div className="settings-label">Hide tab bar in Coder mode</div>
+                  <div className="settings-desc">When editing a project, hide the top tab bar so the editor uses the full width. The bottom-sheet terminal inside the editor (Ctrl+`) handles quick shell tasks.</div>
+                </div>
+                <Toggle
+                  checked={settings.hideTabsInCoder !== false}
+                  onChange={v => set({ hideTabsInCoder: v })}
+                />
+              </div>
+
+              <div className="settings-row">
+                <div>
                   <div className="settings-label">Animated Banner</div>
                   <div className="settings-desc">Type-in banner with a neon glow on every new tab</div>
                 </div>
@@ -1594,6 +1605,7 @@ export default function Settings({ onClose }) {
 
           {/* ── AI ── */}
           {section === 'AI' && <AiSection settings={settings} set={set} />}
+          {section === 'Coder' && <CoderSection settings={settings} set={set} />}
 
           {/* ── Snippets ── */}
           {section === 'Snippets' && <SnippetsSection settings={settings} set={set} />}
@@ -1964,9 +1976,197 @@ function BannerWidgetsRows({ settings, set }) {
 const CLOUD_PROVIDERS = [
   { id: 'groq',       label: 'Groq (free, ~30 req/min, very fast)',  defaultModel: 'llama-3.3-70b-versatile',           keyUrl: 'https://console.groq.com/keys' },
   { id: 'gemini',     label: 'Google Gemini (free, 1500/day)',       defaultModel: 'gemini-2.0-flash',                  keyUrl: 'https://aistudio.google.com/app/apikey' },
-  { id: 'cerebras',   label: 'Cerebras (free, ultra-fast)',           defaultModel: 'llama-3.3-70b',                     keyUrl: 'https://cloud.cerebras.ai' },
-  { id: 'openrouter', label: 'OpenRouter (gateway, free models)',     defaultModel: 'meta-llama/llama-3.3-70b-instruct:free', keyUrl: 'https://openrouter.ai/keys' }
+  { id: 'cerebras',   label: 'Cerebras (free, ultra-fast)',           defaultModel: 'llama3.1-8b',                       keyUrl: 'https://cloud.cerebras.ai' },
+  { id: 'openrouter', label: 'OpenRouter (gateway, free models)',     defaultModel: 'meta-llama/llama-3.2-3b-instruct:free', keyUrl: 'https://openrouter.ai/keys' }
 ]
+
+// Repair a saved model that obviously doesn't belong to the current provider.
+// Catches users with stale settings from previous defaults.
+function resolveCloudModel(provider, savedModel) {
+  const def = CLOUD_PROVIDERS.find(p => p.id === provider)?.defaultModel
+  if (!savedModel) return def
+  const m = savedModel.toLowerCase()
+  if (provider === 'gemini'     && !m.startsWith('gemini'))                         return def
+  if (provider === 'cerebras'   && (m.includes('versatile') || m.includes('/') || m.startsWith('gemini'))) return def
+  if (provider === 'groq'       && (m.startsWith('gemini') || m.includes('/')))    return def
+  if (provider === 'openrouter' && !m.includes('/'))                                return def
+  return savedModel
+}
+
+function CoderSection({ settings, set }) {
+  const coder = settings.coder || {}
+  function upd(patch) { set({ coder: { ...coder, ...patch } }) }
+  return (
+    <div className="settings-section">
+      <p className="section-title">Coder / Editor</p>
+      <div className="settings-desc" style={{ marginBottom: 14 }}>
+        Settings for the project editor (Monaco). Open Project lives in <strong>File menu → Open Project…</strong> when an editor tab is active.
+      </div>
+
+      <div className="settings-subcard">
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Open project in new window</div>
+            <div className="settings-desc">When you pick a project, open it in a brand-new NexTerm window. Leaves your current terminal tabs untouched. Turn this off to open projects as a tab in the current window.</div>
+          </div>
+          <Toggle
+            checked={coder.openInNewWindow !== false}
+            onChange={v => upd({ openInNewWindow: v })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Hide tab bar in Coder mode</div>
+            <div className="settings-desc">Maximize editor vertical space by hiding the top tab bar when editing a project. The bottom-sheet terminal (Ctrl+`) handles quick shell tasks. Mirrors the View menu toggle.</div>
+          </div>
+          <Toggle
+            checked={settings.hideTabsInCoder !== false}
+            onChange={v => set({ hideTabsInCoder: v })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Auto-save</div>
+            <div className="settings-desc">Save edited files automatically after a short idle pause. No more Ctrl+S.</div>
+          </div>
+          <Toggle
+            checked={coder.autoSave === true}
+            onChange={v => upd({ autoSave: v })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Auto-save delay</div>
+            <div className="settings-desc">Wait this long (ms) after the last keystroke before auto-saving. Only applies when auto-save is on.</div>
+          </div>
+          <input
+            type="number" min={200} max={10000} step={100}
+            className="settings-input" style={{ width: 100 }}
+            value={coder.autoSaveDelayMs ?? 1500}
+            onChange={e => upd({ autoSaveDelayMs: Math.max(200, Math.min(10000, Number(e.target.value) || 1500)) })}
+            disabled={coder.autoSave !== true}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Confirm before closing unsaved file</div>
+            <div className="settings-desc">When you close a tab with unsaved changes, ask first. Off = silent discard.</div>
+          </div>
+          <Toggle
+            checked={coder.confirmOnClose !== false}
+            onChange={v => upd({ confirmOnClose: v })}
+          />
+        </div>
+      </div>
+
+      <p className="section-title" style={{ marginTop: 18 }}>Editor</p>
+      <div className="settings-subcard">
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Code font size</div>
+            <div className="settings-desc">Font size in pixels for the Monaco code editor only.</div>
+          </div>
+          <input
+            type="number" min={8} max={32} step={1}
+            className="settings-input" style={{ width: 80 }}
+            value={coder.fontSize ?? 13}
+            onChange={e => upd({ fontSize: Math.max(8, Math.min(32, Number(e.target.value) || 13)) })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Sidebar / tabs font size</div>
+            <div className="settings-desc">Font size for the file tree and open-file tabs. Set independently from the code font so you can have small UI chrome with a large code area, or vice versa.</div>
+          </div>
+          <input
+            type="number" min={8} max={24} step={1}
+            className="settings-input" style={{ width: 80 }}
+            value={coder.treeFontSize ?? 12}
+            onChange={e => upd({ treeFontSize: Math.max(8, Math.min(24, Number(e.target.value) || 12)) })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Tab size</div>
+            <div className="settings-desc">Width of an indentation level, in spaces or tab columns.</div>
+          </div>
+          <input
+            type="number" min={1} max={8} step={1}
+            className="settings-input" style={{ width: 80 }}
+            value={coder.tabSize ?? 2}
+            onChange={e => upd({ tabSize: Math.max(1, Math.min(8, Number(e.target.value) || 2)) })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Insert spaces (instead of tabs)</div>
+            <div className="settings-desc">When you press Tab, insert spaces. Off = real tab characters.</div>
+          </div>
+          <Toggle
+            checked={coder.insertSpaces !== false}
+            onChange={v => upd({ insertSpaces: v })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Word wrap</div>
+            <div className="settings-desc">Wrap long lines at the editor width. Off = horizontal scroll.</div>
+          </div>
+          <Toggle
+            checked={coder.wordWrap === true}
+            onChange={v => upd({ wordWrap: v })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Show minimap</div>
+            <div className="settings-desc">Right-side miniature of the whole file. Click to jump.</div>
+          </div>
+          <Toggle
+            checked={coder.showMinimap !== false}
+            onChange={v => upd({ showMinimap: v })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Line numbers</div>
+            <div className="settings-desc">Show line numbers in the left gutter.</div>
+          </div>
+          <Toggle
+            checked={coder.lineNumbers !== false}
+            onChange={v => upd({ lineNumbers: v })}
+          />
+        </div>
+      </div>
+
+      <p className="section-title" style={{ marginTop: 18 }}>Bottom Terminal</p>
+      <div className="settings-subcard">
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Initial height</div>
+            <div className="settings-desc">Default height (px) of the bottom-sheet terminal when first opened (Ctrl+`). Drag the divider to resize once it's visible.</div>
+          </div>
+          <input
+            type="number" min={80} max={800} step={10}
+            className="settings-input" style={{ width: 90 }}
+            value={coder.bottomTermHeight ?? 240}
+            onChange={e => upd({ bottomTermHeight: Math.max(80, Math.min(800, Number(e.target.value) || 240)) })}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function AiSection({ settings, set }) {
   const ai = settings.ai || { enabled: false, mode: 'cloud',
@@ -2080,7 +2280,7 @@ function AiSection({ settings, set }) {
       const mode    = ai.mode || 'cloud'
       const provider2 = mode === 'local' ? 'ollama' : (ai.cloud?.provider || 'groq')
       const model2  = mode === 'local' ? (ai.local?.model || 'qwen2.5-coder:7b')
-                                       : (ai.cloud?.model || 'llama-3.3-70b-versatile')
+                                       : resolveCloudModel(provider2, ai.cloud?.model)
       let key = null
       if (mode === 'cloud') {
         key = await window.nexterm.vault.get(`ai.${provider2}.apiKey`)
@@ -2317,6 +2517,62 @@ function AiSection({ settings, set }) {
           {testResult.ok ? '✓ ' : '⚠ '}{testResult.msg}
         </div>
       )}
+
+      <div style={{ marginTop: 12 }}>
+        <div className="settings-label">Ghost-text autocomplete <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 6, padding: '1px 6px', background: '#1e4', color: '#0a2', borderRadius: 8 }}>LOCAL ONLY</span></div>
+        <div className="settings-desc" style={{ marginBottom: 6 }}>
+          As you type, a small <strong>local</strong> AI model predicts the rest of the command. Press <kbd>Tab</kbd> to accept. <strong>Nothing leaves your machine and no API quota is used</strong> — runs entirely via Ollama on your computer. Requires Ollama installed + a small model pulled (we recommend <code>qwen2.5-coder:1.5b</code>, ~1 GB).
+        </div>
+        <div className="settings-subcard">
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Enable AI autocomplete</div>
+              <div className="settings-desc">Inline suggestions in the active terminal pane, like Warp. Local-only — never sends keystrokes anywhere.</div>
+            </div>
+            <Toggle
+              checked={(ai.autocomplete?.enabled) === true}
+              onChange={v => upd({ autocomplete: { ...(ai.autocomplete || {}), enabled: v } })}
+            />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Model</div>
+              <div className="settings-desc">Use a small fast model. Coder variants of qwen, llama, or codellama all work. Pull more in the Local Models section above.</div>
+            </div>
+            <input
+              className="settings-input"
+              style={{ minWidth: 220 }}
+              value={ai.autocomplete?.model ?? 'qwen2.5-coder:1.5b'}
+              onChange={e => upd({ autocomplete: { ...(ai.autocomplete || {}), model: e.target.value } })}
+              placeholder="qwen2.5-coder:1.5b"
+            />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Debounce</div>
+              <div className="settings-desc">Wait this long (ms) after the last keystroke before predicting. Lower = snappier but more CPU; higher = more relaxed.</div>
+            </div>
+            <input
+              type="number" min={100} max={2000} step={50}
+              className="settings-input" style={{ width: 90 }}
+              value={ai.autocomplete?.debounceMs ?? 400}
+              onChange={e => upd({ autocomplete: { ...(ai.autocomplete || {}), debounceMs: Math.max(100, Math.min(2000, Number(e.target.value) || 400)) } })}
+            />
+          </div>
+          <div className="settings-row">
+            <div>
+              <div className="settings-label">Minimum characters</div>
+              <div className="settings-desc">Only suggest after you've typed at least this many characters.</div>
+            </div>
+            <input
+              type="number" min={1} max={20} step={1}
+              className="settings-input" style={{ width: 90 }}
+              value={ai.autocomplete?.minChars ?? 3}
+              onChange={e => upd({ autocomplete: { ...(ai.autocomplete || {}), minChars: Math.max(1, Math.min(20, Number(e.target.value) || 3)) } })}
+            />
+          </div>
+        </div>
+      </div>
 
       <div style={{ marginTop: 12 }}>
         <div className="settings-label">Privacy</div>

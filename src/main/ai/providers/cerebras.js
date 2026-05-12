@@ -1,7 +1,25 @@
 // Cerebras — ultra-fast Llama 3.3 70B inference, free tier.
 // https://cloud.cerebras.ai
 
-export async function complete({ prompt, system, model = 'llama-3.3-70b', apiKey }) {
+import { streamOpenAICompat } from './_openai-sse.js'
+
+export async function* streamComplete({ prompt, system, model = 'llama3.1-8b', apiKey, signal }) {
+  if (!apiKey) throw new Error('Cerebras API key not configured')
+  yield* streamOpenAICompat({
+    url: 'https://api.cerebras.ai/v1/chat/completions',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: {
+      model,
+      messages: [...(system ? [{ role: 'system', content: system }] : []), { role: 'user', content: prompt }],
+      temperature: 0.2,
+      max_tokens:  1024,
+      stream: true
+    },
+    signal
+  })
+}
+
+export async function complete({ prompt, system, model = 'llama3.1-8b', apiKey }) {
   if (!apiKey) throw new Error('Cerebras API key not configured')
   const r = await fetch('https://api.cerebras.ai/v1/chat/completions', {
     method: 'POST',

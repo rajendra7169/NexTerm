@@ -9,6 +9,17 @@ import { renderText } from './font.js'
 import { Client as SshClient } from 'ssh2'
 import yaml from 'js-yaml'
 import * as ai from './ai/index.js'
+import { extractPdfText } from './ai/pdf-extract.js'
+import { registerProjectIpc } from './project.js'
+import { registerWindow, broadcast as broadcastToWindows, registerWindowIpc } from './windows.js'
+
+// Pin the app name BEFORE any app.getPath() call so userData stays in
+// %APPDATA%\nexterm regardless of how the binary is launched (npm run dev,
+// electron-vite, raw electron.exe pointing at the .js file, NSIS install).
+// Without this, raw "electron.exe out/main/index.js" launches resolve userData
+// to %APPDATA%\Electron and split the user's vault, settings, and SQLite DB
+// into a parallel folder.
+app.setName('nexterm')
 
 const USER_DATA     = app.getPath('userData')
 const DB_PATH       = join(USER_DATA, 'nexterm.db')
@@ -18,6 +29,10 @@ const ptys = new Map()
 const inputBuffers = new Map()
 const cwds = new Map()           // pty id → current working directory
 const recordings = new Map()     // pane id → { fd: WritableStream, startTs }
+
+// Per-pane debounced AI autocomplete state.
+const aiAutoTimers      = new Map()  // pty id → setTimeout handle
+const aiAutoInFlightBuf = new Map()  // pty id → buf the in-flight request was for
 
 // Smart cd: per-path { count, last_used } persisted to cd_freq.json
 let cdFreq = null         // Map(path → {count, last})
@@ -105,14 +120,10 @@ function setCornerPreference(win, value) {
 }
 
 function safeSend(channel, ...args) {
-  try {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    const wc = mainWindow.webContents
-    if (!wc || wc.isDestroyed()) return
-    wc.send(channel, ...args)
-  } catch {
-    // Silently drop — window torn down between checks
-  }
+  // Broadcast to all open NexTerm windows. Per-pty events use channels like
+  // `pty:data:<id>` so renderers that don't own that PTY simply have no
+  // listener and silently drop them.
+  try { broadcastToWindows(channel, ...args) } catch {}
 }
 
 // Don't let any other unhandled error crash the entire app
@@ -313,6 +324,97 @@ function suggestFor(buf) {
     'SELECT command FROM history WHERE command LIKE ? AND command != ? ORDER BY timestamp DESC LIMIT 1'
   ).get(buf + '%', buf)
   return row?.command || ''
+}
+
+// Read an API key directly from the encrypted secrets table.
+// (Same as the vault:get IPC handler but callable from main-side code.)
+function readVaultKey(name) {
+  try {
+    const row = db.prepare('SELECT encrypted_value FROM secrets WHERE name = ?').get(name)
+    if (!row) return null
+    return safeStorage.decryptString(row.encrypted_value)
+  } catch { return null }
+}
+
+// Schedule an AI-powered autocomplete request for this pane's current input.
+// Debounced — cancels any prior pending timer. The history-based suggestion
+// has already fired immediately; the AI result, when it arrives, only
+// overrides if a sensible suffix comes back AND the user hasn't typed more.
+function scheduleAiAutocomplete(id, buf, settings) {
+  if (aiAutoTimers.has(id)) {
+    clearTimeout(aiAutoTimers.get(id))
+    aiAutoTimers.delete(id)
+  }
+  const ac = settings.ai?.autocomplete
+  if (!settings.ai?.enabled) return
+  if (!ac?.enabled) return
+  if (!buf || buf.length < (ac.minChars || 3)) return
+  // Skip if the input ends with a space — the user likely paused mid-thought
+  // and AI completion of "git " → "git status" is rarely what they want.
+  if (buf.endsWith(' ')) return
+
+  const timer = setTimeout(async () => {
+    aiAutoTimers.delete(id)
+    // If user typed more or cleared the buffer since this was scheduled, skip.
+    if (inputBuffers.get(id) !== buf) return
+    // Avoid stacking duplicates if a prior request is still flying for the same buf.
+    if (aiAutoInFlightBuf.get(id) === buf) return
+    aiAutoInFlightBuf.set(id, buf)
+
+    try {
+      // Autocomplete is LOCAL-ONLY by design — every keystroke pause would
+      // otherwise burn cloud API quota. Local Ollama is free, private, fast.
+      const provider = 'ollama'
+      const model    = ac.model || settings.ai.local?.model || 'qwen2.5-coder:1.5b'
+      const apiKey   = null
+      // If Ollama daemon isn't up, silently bail — autocomplete must never
+      // get in the user's way. Settings UI surfaces the install button.
+      try {
+        const running = await ai.isOllamaRunning()
+        if (!running) return
+      } catch { return }
+
+      const cwd = cwds.get(id) || ''
+      let recentCmds = []
+      try {
+        recentCmds = db.prepare(
+          'SELECT command FROM history WHERE command != ? ORDER BY timestamp DESC LIMIT 5'
+        ).all(buf).map(r => r.command)
+      } catch {}
+
+      const promptText =
+        (cwd ? `Current directory: ${cwd}\n` : '') +
+        (recentCmds.length ? `Recent commands (most recent first):\n${recentCmds.join('\n')}\n` : '') +
+        `\nPartial command (complete it):\n${buf}`
+
+      const text = await ai.complete({
+        provider, model, apiKey,
+        system: ai.SYSTEM_PROMPTS.autocomplete,
+        prompt: promptText
+      })
+
+      // The user may have typed more (or cleared) while we were waiting.
+      if (inputBuffers.get(id) !== buf) return
+
+      let suffix = (text || '').trim().split('\n')[0]
+      if (!suffix || suffix === '?') return
+      // Strip a leading echo of the prefix if the model returned it.
+      if (suffix.toLowerCase().startsWith(buf.toLowerCase())) {
+        suffix = suffix.slice(buf.length)
+      }
+      // Trim trailing punctuation that PowerShell would never want at end-of-line.
+      suffix = suffix.replace(/[`"']+$/, '')
+      if (!suffix) return
+
+      safeSend(`suggest:${id}`, { input: buf, suggestion: buf + suffix })
+    } catch {
+      // Silent failure — autocomplete must never get in the user's way.
+    } finally {
+      if (aiAutoInFlightBuf.get(id) === buf) aiAutoInFlightBuf.delete(id)
+    }
+  }, ac.debounceMs || 500)
+
+  aiAutoTimers.set(id, timer)
 }
 
 // ─── PTY ──────────────────────────────────────────────────────────────────────
@@ -1126,11 +1228,17 @@ function setupIPC() {
 
       inputBuffers.set(id, buf)
 
-      if (inputChanged && settings.suggestions) {
-        try {
-          const suggestion = suggestFor(buf)
-          safeSend(`suggest:${id}`, { input: buf, suggestion })
-        } catch {}
+      if (inputChanged) {
+        // Step 1: history-based suggestion fires instantly (free, no API call)
+        if (settings.suggestions) {
+          try {
+            const suggestion = suggestFor(buf)
+            safeSend(`suggest:${id}`, { input: buf, suggestion })
+          } catch {}
+        }
+        // Step 2: AI ghost-text autocomplete fires after debounce.
+        // If it produces a longer/better completion, it overrides the history one.
+        try { scheduleAiAutocomplete(id, buf, settings) } catch (e) { console.error('[aiAutocomplete]', e?.message) }
       }
     } catch (e) {
       console.error('[pty:write outer]', e?.message)
@@ -1146,6 +1254,8 @@ function setupIPC() {
     ptys.delete(id)
     inputBuffers.delete(id)
     cwds.delete(id)
+    if (aiAutoTimers.has(id)) { clearTimeout(aiAutoTimers.get(id)); aiAutoTimers.delete(id) }
+    aiAutoInFlightBuf.delete(id)
   })
 
   // History — supports scope ('all' | 'cwd' | 'tree') with per-session cwd
@@ -1227,12 +1337,22 @@ function setupIPC() {
 
   // Settings
   ipcMain.handle('settings:get',  ()    => loadSettings())
-  ipcMain.handle('settings:save', (_, s) => {
+  ipcMain.handle('settings:save', (e, s) => {
     saveSettings(s)
     // Sync native UI theme to follow the app theme
     try {
       const bg = THEME_BG[s.theme] || '#1a1b26'
       nativeTheme.themeSource = /^#[fed]/i.test(bg) ? 'light' : 'dark'
+    } catch {}
+    // Broadcast to OTHER windows so they pick up the new settings live.
+    // Skip the sender — their renderer already updated.
+    try {
+      const senderId = e?.sender?.id
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (w.isDestroyed()) continue
+        if (w.webContents.id === senderId) continue
+        try { w.webContents.send('settings:changed', s) } catch {}
+      }
     } catch {}
     return true
   })
@@ -1438,31 +1558,43 @@ function setupIPC() {
     db.prepare('DELETE FROM profiles WHERE id = ?').run(id)
   })
 
-  // Window
-  ipcMain.on('win:minimize', () => mainWindow?.minimize())
-  ipcMain.on('win:maximize', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMaximized())   mainWindow.unmaximize()
-    else if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
-    else mainWindow.maximize()
+  // Window — operate on the sender's window so each browser window controls
+  // ITS OWN minimize/maximize/close, not always the main window.
+  const fromSender = (e) => {
+    try { return BrowserWindow.fromWebContents(e.sender) } catch { return mainWindow }
+  }
+  ipcMain.on('win:minimize', (e) => fromSender(e)?.minimize())
+  ipcMain.on('win:maximize', (e) => {
+    const w = fromSender(e); if (!w) return
+    if (w.isMaximized())   w.unmaximize()
+    else if (w.isFullScreen()) w.setFullScreen(false)
+    else w.maximize()
   })
-  ipcMain.on('win:close', () => mainWindow?.close())
+  ipcMain.on('win:close', (e) => fromSender(e)?.close())
 
+  // Window-appearance settings apply to ALL open NexTerm windows so the
+  // user gets a consistent look when they switch between them.
   ipcMain.handle('win:setOpacity', (_, v) => {
     const opacity = Math.max(0.3, Math.min(1.0, Number(v) || 1.0))
-    mainWindow?.setOpacity(opacity)
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.setOpacity(opacity) } catch {}
+    }
     return opacity
   })
 
   ipcMain.handle('win:setAlwaysOnTop', (_, on) => {
-    mainWindow?.setAlwaysOnTop(!!on)
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.setAlwaysOnTop(!!on) } catch {}
+    }
     return !!on
   })
 
   ipcMain.handle('win:setBlur', (_, material) => {
     try {
       const m = ['mica','acrylic','tabbed'].includes(material) ? material : 'none'
-      mainWindow?.setBackgroundMaterial?.(m)
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { w.setBackgroundMaterial?.(m) } catch {}
+      }
       return m
     } catch (e) { return 'none' }
   })
@@ -1600,6 +1732,27 @@ function setupIPC() {
     }
   })
 
+  // ─── Project / Coder mode ───────────────────────────────────────────────
+  registerProjectIpc({ mainWindow })
+
+  // ─── Multi-window ───────────────────────────────────────────────────────
+  registerWindowIpc({
+    buildOptions: buildWindowOptions,
+    onCreated: (win) => {
+      // Wire each child window with the same maximize listeners and corner fix
+      // we use for the main window. Don't intercept close on children — only
+      // mainWindow honors the "Run in background" setting.
+      win.on('maximize',   () => { try { win.webContents.send('win:maximized', win.isMaximized()) } catch {} })
+      win.on('unmaximize', () => { try { win.webContents.send('win:maximized', win.isMaximized()) } catch {} })
+      win.once('ready-to-show', () => {
+        try {
+          win.show()
+          setCornerPreference(win, 2)
+        } catch (e) { console.error('[child-window]', e?.message) }
+      })
+    }
+  })
+
   // ─── AI ───────────────────────────────────────────────────────────────────
   ipcMain.handle('ai:detectHardware', () => {
     const hw = ai.detectHardware()
@@ -1615,6 +1768,135 @@ function setupIPC() {
     } catch (e) {
       return { ok: false, error: String(e?.message || e) }
     }
+  })
+
+  // Streaming: kicks off the request and returns a streamId immediately.
+  // Chunks flow back through 'ai:stream:event' with { streamId, type, ... }.
+  //
+  // Auto-failover: if the primary provider 429s (or hits a quota error) BEFORE
+  // emitting any chunk, we silently retry with the next configured cloud
+  // provider that has an API key in the vault. Once any chunk has streamed,
+  // we commit to that provider — no more switching mid-response.
+  const activeStreams = new Map()  // streamId → AbortController
+
+  // Order of providers tried after the primary fails over. Vision attachments
+  // restrict this to vision-capable providers.
+  const CLOUD_CHAIN = ['groq', 'gemini', 'cerebras', 'openrouter']
+  const VISION_PROVIDERS = new Set(['groq', 'gemini', 'openrouter'])
+
+  function readVaultKey(name) {
+    try {
+      const row = db.prepare('SELECT encrypted_value FROM secrets WHERE name = ?').get(name)
+      if (!row) return null
+      return safeStorage.decryptString(row.encrypted_value)
+    } catch { return null }
+  }
+
+  function isQuotaError(err) {
+    const msg = String(err?.message || err || '').toLowerCase()
+    return msg.includes('429') ||
+           msg.includes('rate limit') ||
+           msg.includes('rate-limit') ||
+           msg.includes('quota') ||
+           msg.includes('too many requests')
+  }
+
+  // Defaults used when failing over — keeps the request going even if the
+  // user's saved model is provider-specific.
+  const PROVIDER_DEFAULTS = {
+    groq:       'llama-3.3-70b-versatile',
+    gemini:     'gemini-2.0-flash',
+    cerebras:   'llama3.1-8b',
+    openrouter: 'meta-llama/llama-3.2-3b-instruct:free',  // smaller = less rate-limited
+    ollama:     'qwen2.5-coder:7b'
+  }
+  const VISION_DEFAULTS = {
+    groq:       'llama-3.2-11b-vision-preview',
+    gemini:     'gemini-2.0-flash',
+    openrouter: 'meta-llama/llama-3.2-11b-vision-instruct:free'
+  }
+
+  ipcMain.handle('ai:stream:start', (_, opts) => {
+    const streamId = `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const controller = new AbortController()
+    activeStreams.set(streamId, controller)
+
+    const primary = opts?.provider || 'groq'
+    const hasImages = Array.isArray(opts?.images) && opts.images.length > 0
+
+    // Build the candidate list: primary first, then chain (skipping primary
+    // and any provider without a vault key). For image requests, only keep
+    // vision-capable providers.
+    const candidates = [primary, ...CLOUD_CHAIN.filter(p => p !== primary)]
+      .filter(p => p === 'ollama' || readVaultKey(`ai.${p}.apiKey`))
+      .filter(p => !hasImages || VISION_PROVIDERS.has(p))
+
+    ;(async () => {
+      let chunkCount = 0
+      let lastError = null
+      for (let i = 0; i < candidates.length; i++) {
+        const cand = candidates[i]
+        // Use saved model for primary, defaults for fallbacks (saved model may
+        // be primary-specific like "gemini-2.0-flash").
+        const candModel = cand === primary
+          ? opts?.model
+          : (hasImages ? VISION_DEFAULTS[cand] : PROVIDER_DEFAULTS[cand])
+        const candKey = cand === 'ollama' ? null : readVaultKey(`ai.${cand}.apiKey`)
+        const candOpts = { ...(opts || {}), provider: cand, model: candModel, apiKey: candKey, signal: controller.signal }
+
+        if (i > 0) {
+          safeSend('ai:stream:event', {
+            streamId,
+            type: 'info',
+            text: `↪ ${primary} rate-limited — switched to ${cand}`
+          })
+        }
+
+        try {
+          for await (const chunk of ai.streamComplete(candOpts)) {
+            if (controller.signal.aborted) break
+            if (chunk) {
+              chunkCount++
+              safeSend('ai:stream:event', { streamId, type: 'chunk', text: chunk })
+            }
+          }
+          // Stream finished cleanly — done.
+          safeSend('ai:stream:event', { streamId, type: 'end', cancelled: controller.signal.aborted })
+          activeStreams.delete(streamId)
+          return
+        } catch (e) {
+          if (controller.signal.aborted) {
+            safeSend('ai:stream:event', { streamId, type: 'end', cancelled: true })
+            activeStreams.delete(streamId)
+            return
+          }
+          lastError = e
+          // Only fail over if (a) no chunk has streamed yet, and (b) it's a quota error.
+          if (chunkCount === 0 && isQuotaError(e) && i < candidates.length - 1) {
+            continue
+          }
+          // No more candidates. If this was a quota error and no failover was
+          // available, hint the user to add another provider's API key.
+          let errMsg = String(e?.message || e)
+          if (isQuotaError(e) && candidates.length === 1) {
+            errMsg += `\n\nTip: add an API key for another free provider in Settings → AI (Groq, Gemini, or Cerebras) and NexTerm will auto-switch when ${cand} is rate-limited.`
+          }
+          safeSend('ai:stream:event', { streamId, type: 'error', error: errMsg })
+          activeStreams.delete(streamId)
+          return
+        }
+      }
+      // Ran out of candidates.
+      safeSend('ai:stream:event', { streamId, type: 'error', error: String(lastError?.message || lastError || 'No provider available') })
+      activeStreams.delete(streamId)
+    })()
+    return { streamId }
+  })
+
+  ipcMain.handle('ai:stream:cancel', (_, streamId) => {
+    const ctrl = activeStreams.get(streamId)
+    if (ctrl) { try { ctrl.abort() } catch {} ; activeStreams.delete(streamId) }
+    return { ok: true }
   })
   ipcMain.handle('ai:testProvider', (_, opts) => ai.testProvider(opts || {}))
   ipcMain.handle('ai:systemPrompts', () => ai.SYSTEM_PROMPTS)
@@ -1657,8 +1939,9 @@ function setupIPC() {
       title: 'Attach to AI chat',
       properties: ['openFile'],
       filters: [
-        { name: 'Text & code', extensions: ['txt', 'md', 'json', 'yml', 'yaml', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'rb', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'sh', 'ps1', 'css', 'html', 'log', 'ini', 'toml', 'env'] },
+        { name: 'All supported', extensions: ['pdf', 'txt', 'md', 'json', 'yml', 'yaml', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'rb', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'sh', 'ps1', 'css', 'html', 'log', 'ini', 'toml', 'env', 'png', 'jpg', 'jpeg', 'gif', 'webp'] },
         { name: 'PDF',         extensions: ['pdf'] },
+        { name: 'Text & code', extensions: ['txt', 'md', 'json', 'yml', 'yaml', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'rb', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'sh', 'ps1', 'css', 'html', 'log', 'ini', 'toml', 'env'] },
         { name: 'Images',      extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] },
         { name: 'All files',   extensions: ['*'] }
       ]
@@ -1683,7 +1966,23 @@ function setupIPC() {
           dataBase64: buf.toString('base64')
         }
       }
-      // Everything else: try to read as text (PDF text-extraction deferred to Phase 2)
+      // PDF: extract text via pdfjs-dist
+      if (ext === 'pdf') {
+        try {
+          const { text, pageCount, truncated } = await extractPdfText(path)
+          return {
+            ok: true,
+            name, path, ext, size: stat.size,
+            kind: 'text',
+            text: text || '[PDF appears to contain no extractable text — it may be a scanned image.]',
+            pageCount,
+            truncated
+          }
+        } catch (e) {
+          return { ok: false, error: `Failed to read PDF: ${String(e?.message || e)}` }
+        }
+      }
+      // Everything else: read as UTF-8 text
       const text = require('fs').readFileSync(path, 'utf8')
       return {
         ok: true,
@@ -2196,6 +2495,38 @@ const THEME_BG = {
   light: '#fafafa'
 }
 
+// Build standard BrowserWindow options. Reused for the main window and any
+// child windows opened via "Open Project in New Window" or "Move Tab".
+function buildWindowOptions() {
+  const settings = loadSettings()
+  const themeBg = THEME_BG[settings.theme] || '#1a1b26'
+  let { width, height } = SIZE_PRESETS.medium
+  const preset = settings.launchSizePreset || 'medium'
+  if (preset === 'custom') {
+    width  = settings.launchWidth  || 1280
+    height = settings.launchHeight || 800
+  } else if (SIZE_PRESETS[preset]) {
+    width  = SIZE_PRESETS[preset].width
+    height = SIZE_PRESETS[preset].height
+  }
+  return {
+    width, height,
+    minWidth: 500, minHeight: 350,
+    titleBarStyle: 'hidden',
+    transparent: false,
+    hasShadow: true,
+    backgroundColor: themeBg,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    },
+    show: false,
+    title: 'NexTerm',
+    icon: join(__dirname, '../../build/icon.png')
+  }
+}
+
 function createWindow() {
   const settings = loadSettings()
   const themeBg = THEME_BG[settings.theme] || '#1a1b26'
@@ -2218,7 +2549,7 @@ function createWindow() {
   const needsTransparent = false
   console.log(`[createWindow] needsTransparent=${needsTransparent} blur=${settings.windowBlur} opacity=${settings.terminalOpacity}`)
 
-  mainWindow = new BrowserWindow({
+  const winOpts = {
     width, height,
     minWidth: 500, minHeight: 350,
     // titleBarStyle:'hidden' keeps OS-managed window frame (smooth maximize
@@ -2239,12 +2570,20 @@ function createWindow() {
     show: false,
     title: 'NexTerm',
     icon: join(__dirname, '../../build/icon.png')
-  })
+  }
+
+  mainWindow = new BrowserWindow(winOpts)
+  registerWindow(mainWindow)
 
   // Tell the renderer when the window changes maximized state — so it can
   // strip the rounded edge / shadow padding that only makes sense when floating.
+  // CRITICAL: send to THIS window only, never broadcast. Otherwise child
+  // windows think they're maximized whenever the main window is.
   const broadcastMaxState = () => {
-    safeSend('win:maximized', mainWindow.isMaximized())
+    try {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      mainWindow.webContents.send('win:maximized', mainWindow.isMaximized())
+    } catch {}
   }
   mainWindow.on('maximize',   broadcastMaxState)
   mainWindow.on('unmaximize', broadcastMaxState)

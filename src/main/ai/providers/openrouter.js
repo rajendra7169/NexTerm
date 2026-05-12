@@ -1,7 +1,44 @@
 // OpenRouter — multi-model gateway with several "free" labeled models.
 // https://openrouter.ai/keys
 
-export async function complete({ prompt, system, model = 'meta-llama/llama-3.3-70b-instruct:free', apiKey }) {
+import { streamOpenAICompat } from './_openai-sse.js'
+
+function buildUserContent(prompt, images) {
+  if (!images || images.length === 0) return prompt
+  return [
+    { type: 'text', text: prompt },
+    ...images.map(img => ({
+      type: 'image_url',
+      image_url: { url: `data:${img.mime || 'image/png'};base64,${img.dataBase64}` }
+    }))
+  ]
+}
+
+export async function* streamComplete({ prompt, system, images, model = 'meta-llama/llama-3.2-3b-instruct:free', apiKey, signal }) {
+  if (!apiKey) throw new Error('OpenRouter API key not configured')
+  yield* streamOpenAICompat({
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer':  'https://github.com/rajendra7169/NexTerm',
+      'X-Title':       'NexTerm'
+    },
+    body: {
+      model,
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: buildUserContent(prompt, images) }
+      ],
+      temperature: 0.2,
+      max_tokens:  1024,
+      stream: true
+    },
+    signal
+  })
+}
+
+export async function complete({ prompt, system, images, model = 'meta-llama/llama-3.2-3b-instruct:free', apiKey }) {
   if (!apiKey) throw new Error('OpenRouter API key not configured')
   const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
@@ -15,7 +52,7 @@ export async function complete({ prompt, system, model = 'meta-llama/llama-3.3-7
       model,
       messages: [
         ...(system ? [{ role: 'system', content: system }] : []),
-        { role: 'user', content: prompt }
+        { role: 'user', content: buildUserContent(prompt, images) }
       ],
       temperature: 0.2,
       max_tokens:  512

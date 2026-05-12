@@ -255,6 +255,25 @@ export default function TabBar() {
               <span>{p.name}</span>
             </div>
           ))}
+          <div className="shell-menu-header" style={{ marginTop: 4 }}>Coder mode</div>
+          <div className="shell-menu-item" onClick={async () => {
+            const dir = await window.nexterm.project.pickFolder()
+            if (!dir) { setShowMenu(false); return }
+            const liveSettings = useStore.getState().settings
+            const newWin = liveSettings.coder?.openInNewWindow !== false
+            console.log('[TabBar] open project', { dir, newWin })
+            if (newWin) {
+              const r = await window.nexterm.window.openWith({ kind: 'editor', projectPath: dir })
+              console.log('[TabBar] openWith result', r)
+              if (!r?.ok) useStore.getState().addEditorTab(dir)
+            } else {
+              useStore.getState().addEditorTab(dir)
+            }
+            setShowMenu(false)
+          }}>
+            <span className="shell-tag">📁</span>
+            <span>Open Project…</span>
+          </div>
         </div>,
         document.body
       )}

@@ -1,6 +1,38 @@
 // Groq free-tier cloud provider — OpenAI-compatible API at api.groq.com.
 
-export async function complete({ prompt, system, model = 'llama-3.3-70b-versatile', apiKey }) {
+import { streamOpenAICompat } from './_openai-sse.js'
+
+function buildUserContent(prompt, images) {
+  if (!images || images.length === 0) return prompt
+  return [
+    { type: 'text', text: prompt },
+    ...images.map(img => ({
+      type: 'image_url',
+      image_url: { url: `data:${img.mime || 'image/png'};base64,${img.dataBase64}` }
+    }))
+  ]
+}
+
+export async function* streamComplete({ prompt, system, images, model = 'llama-3.3-70b-versatile', apiKey, signal }) {
+  if (!apiKey) throw new Error('Groq API key not configured')
+  yield* streamOpenAICompat({
+    url: 'https://api.groq.com/openai/v1/chat/completions',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: {
+      model,
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        { role: 'user', content: buildUserContent(prompt, images) }
+      ],
+      temperature: 0.2,
+      max_tokens:  1024,
+      stream: true
+    },
+    signal
+  })
+}
+
+export async function complete({ prompt, system, images, model = 'llama-3.3-70b-versatile', apiKey }) {
   if (!apiKey) throw new Error('Groq API key not configured')
   const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -12,7 +44,7 @@ export async function complete({ prompt, system, model = 'llama-3.3-70b-versatil
       model,
       messages: [
         ...(system ? [{ role: 'system', content: system }] : []),
-        { role: 'user', content: prompt }
+        { role: 'user', content: buildUserContent(prompt, images) }
       ],
       temperature: 0.2,
       max_tokens:  512

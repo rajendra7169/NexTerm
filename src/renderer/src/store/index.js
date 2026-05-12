@@ -112,6 +112,28 @@ const DEFAULT_SETTINGS = {
   // Width of the AI Chat side panel (resizable)
   aiChatWidth: 420,
 
+  // Coder mode UX — hide the terminal tab bar at top so the editor uses
+  // the whole window. The user can still create new tabs via the command
+  // palette / shortcuts, and can disable this if they prefer split view.
+  hideTabsInCoder: true,
+
+  // Coder/Editor preferences
+  coder: {
+    openInNewWindow:   true,    // "Open Project…" opens in a new window by default
+    autoSave:          false,   // auto-save dirty files after a brief idle
+    autoSaveDelayMs:   1500,    // idle delay before auto-save fires
+    fontSize:          13,    // Monaco code font
+    treeFontSize:      12,    // file tree + editor tabs
+    tabSize:           2,
+    insertSpaces:      true,    // use spaces instead of tab characters
+    wordWrap:          false,
+    showMinimap:       true,
+    lineNumbers:       true,
+    bottomTermHeight:  240,
+    formatOnSave:      false,
+    confirmOnClose:    true     // ask before closing tab with unsaved changes
+  },
+
   // AI Assistant — Ctrl+Shift+A natural-language command bar
   ai: {
     enabled:  false,
@@ -124,6 +146,15 @@ const DEFAULT_SETTINGS = {
       sendLastCommand:   true,    // include the previous command (for explain)
       redactEnvVars:     true,    // strip API_KEY=… and similar from context
       redactHomePath:    false    // replace C:\Users\<name>\ with ~\
+    },
+    // Inline ghost-text autocomplete (like Warp). Local Ollama only — runs
+    // entirely on your machine, no API calls, no quotas, fully private.
+    // Off by default since it needs a local model pulled.
+    autocomplete: {
+      enabled:    false,
+      model:      'qwen2.5-coder:1.5b',  // small + fast; pull via Settings → AI → Local
+      debounceMs: 400,                    // wait this long after last keystroke before firing
+      minChars:   3                        // minimum length of typed text before AI is invoked
     }
     // API keys are stored in the encrypted vault under: ai.<provider>.apiKey
   }
@@ -142,12 +173,33 @@ function createTab(opts = {}) {
   const leaf = createLeaf(opts)
   return {
     id: newTabId(),
+    type: 'terminal',                // 'terminal' | 'editor'
     name: opts.name || `Terminal ${counter++}`,
     root: leaf,
     activePane: leaf.id,
     pinned: !!opts.pinned,
     color:  opts.color  || null,    // accent color hex
     broadcast: !!opts.broadcast     // mirror input to all panes in this tab
+  }
+}
+
+// Editor tab — has a projectPath and tracks open files.
+// openFiles is [{ path, dirty }] in tab order. activeFile is the current path.
+// bottomPane: optional embedded terminal at the bottom of the editor (Ctrl+`).
+function createEditorTab(projectPath, name) {
+  return {
+    id: newTabId(),
+    type: 'editor',
+    name: name || projectPath.split(/[\\/]/).filter(Boolean).pop() || 'Editor',
+    projectPath,
+    openFiles: [],
+    activeFile: null,
+    bottomPane: null,            // leaf pane object once user opens the bottom terminal
+    bottomVisible: false,
+    bottomHeight: 240,            // pixels
+    pinned: false,
+    color:  null,
+    broadcast: false
   }
 }
 
@@ -245,6 +297,84 @@ export const useStore = create((set, get) => ({
     const tab = createTab(opts)
     set(s => ({ tabs: [...s.tabs, tab], activeId: tab.id }))
     return tab
+  },
+
+  // ── Editor tabs (coder mode) ──
+  addEditorTab: (projectPath) => {
+    const tab = createEditorTab(projectPath)
+    set(s => ({ tabs: [...s.tabs, tab], activeId: tab.id }))
+    return tab
+  },
+
+  openFileInEditor: (tabId, path) => {
+    set(s => ({
+      tabs: s.tabs.map(t => {
+        if (t.id !== tabId || t.type !== 'editor') return t
+        if (t.openFiles?.some(f => f.path === path)) {
+          return { ...t, activeFile: path }
+        }
+        return { ...t, openFiles: [...(t.openFiles || []), { path, dirty: false }], activeFile: path }
+      })
+    }))
+  },
+
+  setEditorActiveFile: (tabId, path) => {
+    set(s => ({ tabs: s.tabs.map(t => t.id === tabId ? { ...t, activeFile: path } : t) }))
+  },
+
+  closeFileInEditor: (tabId, path) => {
+    set(s => ({
+      tabs: s.tabs.map(t => {
+        if (t.id !== tabId || t.type !== 'editor') return t
+        const openFiles = (t.openFiles || []).filter(f => f.path !== path)
+        let activeFile = t.activeFile
+        if (activeFile === path) activeFile = openFiles[openFiles.length - 1]?.path ?? null
+        return { ...t, openFiles, activeFile }
+      })
+    }))
+  },
+
+  // Bottom-sheet terminal inside an editor tab (VS Code-style Ctrl+`)
+  toggleBottomTerminal: (tabId) => {
+    set(s => {
+      const defaultH = s.settings?.coder?.bottomTermHeight ?? 240
+      return {
+        tabs: s.tabs.map(t => {
+          if (t.id !== tabId || t.type !== 'editor') return t
+          // Create the pane lazily on first show, with cwd = projectPath.
+          const bottomPane = t.bottomPane || createLeaf({ cwd: t.projectPath })
+          const bottomHeight = t.bottomHeight || defaultH
+          return { ...t, bottomPane, bottomVisible: !t.bottomVisible, bottomHeight }
+        })
+      }
+    })
+  },
+  closeBottomTerminal: (tabId) => {
+    set(s => ({
+      tabs: s.tabs.map(t => {
+        if (t.id !== tabId || t.type !== 'editor') return t
+        return { ...t, bottomVisible: false, bottomPane: null }
+      })
+    }))
+  },
+  setBottomHeight: (tabId, h) => {
+    set(s => ({
+      tabs: s.tabs.map(t => (t.id === tabId && t.type === 'editor')
+        ? { ...t, bottomHeight: Math.max(80, Math.min(800, h)) }
+        : t)
+    }))
+  },
+
+  setFileDirty: (tabId, path, dirty) => {
+    set(s => ({
+      tabs: s.tabs.map(t => {
+        if (t.id !== tabId || t.type !== 'editor') return t
+        return {
+          ...t,
+          openFiles: (t.openFiles || []).map(f => f.path === path ? { ...f, dirty } : f)
+        }
+      })
+    }))
   },
 
   removeTab: (id) => {

@@ -58,7 +58,12 @@ contextBridge.exposeInMainWorld('nexterm', {
     openEditor: ()  => ipcRenderer.invoke('settings:openEditor'),
     export:     ()  => ipcRenderer.invoke('settings:export'),
     import:     ()  => ipcRenderer.invoke('settings:import'),
-    reset:      ()  => ipcRenderer.invoke('settings:reset')
+    reset:      ()  => ipcRenderer.invoke('settings:reset'),
+    onChanged: (cb) => {
+      const fn = (_, s) => cb(s)
+      ipcRenderer.on('settings:changed', fn)
+      return () => ipcRenderer.removeListener('settings:changed', fn)
+    }
   },
 
   startup: {
@@ -85,6 +90,10 @@ contextBridge.exposeInMainWorld('nexterm', {
     get:    (n)   => ipcRenderer.invoke('vault:get', n),
     set:    (p)   => ipcRenderer.invoke('vault:set', p),
     delete: (n)   => ipcRenderer.invoke('vault:delete', n)
+  },
+
+  window: {
+    openWith: (opts) => ipcRenderer.invoke('window:openWith', opts)
   },
 
   win: {
@@ -132,6 +141,13 @@ contextBridge.exposeInMainWorld('nexterm', {
     isOllamaRunning: ()      => ipcRenderer.invoke('ai:isOllamaRunning'),
     listLocalModels: ()      => ipcRenderer.invoke('ai:listLocalModels'),
     complete:        (opts)  => ipcRenderer.invoke('ai:complete', opts),
+    streamStart:     (opts)  => ipcRenderer.invoke('ai:stream:start', opts),
+    streamCancel:    (id)    => ipcRenderer.invoke('ai:stream:cancel', id),
+    onStreamEvent:   (cb) => {
+      const fn = (_, evt) => cb(evt)
+      ipcRenderer.on('ai:stream:event', fn)
+      return () => ipcRenderer.removeListener('ai:stream:event', fn)
+    },
     testProvider:    (opts)  => ipcRenderer.invoke('ai:testProvider', opts),
     systemPrompts:   ()      => ipcRenderer.invoke('ai:systemPrompts'),
     installOllama:   ()      => ipcRenderer.invoke('ai:installOllama'),
@@ -160,6 +176,23 @@ contextBridge.exposeInMainWorld('nexterm', {
 
   workspace: {
     load: (dir) => ipcRenderer.invoke('workspace:load', dir)
+  },
+
+  project: {
+    pickFolder: ()                => ipcRenderer.invoke('project:pickFolder'),
+    list:       (dir)             => ipcRenderer.invoke('project:list', dir),
+    read:       (path)            => ipcRenderer.invoke('project:read', path),
+    write:      (path, text)      => ipcRenderer.invoke('project:write', { path, text }),
+    create:     (path, isDir)     => ipcRenderer.invoke('project:create', { path, isDir }),
+    delete:     (path)            => ipcRenderer.invoke('project:delete', path),
+    rename:     (from, to)        => ipcRenderer.invoke('project:rename', { from, to }),
+    watch:      (dir)             => ipcRenderer.invoke('project:watch', dir),
+    unwatch:    (dir)             => ipcRenderer.invoke('project:unwatch', dir),
+    onFsEvent:  (cb) => {
+      const fn = (_, data) => cb(data)
+      ipcRenderer.on('project:fsEvent', fn)
+      return () => ipcRenderer.removeListener('project:fsEvent', fn)
+    }
   },
 
   record: {

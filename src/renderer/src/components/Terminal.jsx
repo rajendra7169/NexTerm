@@ -199,6 +199,15 @@ export default function Terminal({ pane, tabId, active }) {
     if (!containerRef.current) return;
 
     const theme = getTheme(settings.theme);
+    // Defensive numeric coercion — xterm's Buffer service crashes with a
+    // RangeError ("Invalid array length") if scrollback is NaN / undefined /
+    // negative, which has happened in child windows that mount before the
+    // settings are fully hydrated.
+    const safeNum = (v, fallback, min, max) => {
+      const n = Number(v)
+      if (!Number.isFinite(n)) return fallback
+      return Math.max(min, Math.min(max, n))
+    }
     const xterm = new XTerm({
       theme: applyCustomColors(
         theme.xterm,
@@ -206,12 +215,12 @@ export default function Terminal({ pane, tabId, active }) {
         !!settings.backgroundImage ||
           (settings.windowBlur && settings.windowBlur !== "none"),
       ),
-      fontSize: settings.fontSize,
-      fontFamily: settings.fontFamily,
-      lineHeight: settings.lineHeight,
-      cursorStyle: settings.cursorStyle,
-      cursorBlink: settings.cursorBlink,
-      scrollback: settings.scrollback,
+      fontSize:   safeNum(settings.fontSize,   14, 6, 72),
+      fontFamily: settings.fontFamily || 'Cascadia Code, Consolas, monospace',
+      lineHeight: safeNum(settings.lineHeight, 1.2, 0.8, 3),
+      cursorStyle: settings.cursorStyle || 'block',
+      cursorBlink: settings.cursorBlink !== false,
+      scrollback:  safeNum(settings.scrollback, 1000, 0, 100000),
       allowProposedApi: true,
       convertEol: true,
     });

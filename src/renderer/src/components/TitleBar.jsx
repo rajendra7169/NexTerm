@@ -37,7 +37,7 @@ const CloseIcon = () => (
   </svg>
 )
 
-export default function TitleBar({ onSettings, onHistory, onPalette, onProfiles }) {
+export default function TitleBar({ onSettings, onHistory, onPalette, onProfiles, onAi }) {
   const settings  = useStore(s => s.settings)
   const placement = settings.windowButtons || 'right'
   const style     = settings.buttonStyle   || 'windows'

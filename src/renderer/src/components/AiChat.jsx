@@ -35,9 +35,29 @@ function captureActivePaneContext(maxLines = 30) {
 const CLOUD_PROVIDERS = [
   { id: 'groq',       label: 'Groq',       defaultModel: 'llama-3.3-70b-versatile' },
   { id: 'gemini',     label: 'Gemini',     defaultModel: 'gemini-2.0-flash' },
-  { id: 'cerebras',   label: 'Cerebras',   defaultModel: 'llama-3.3-70b' },
-  { id: 'openrouter', label: 'OpenRouter', defaultModel: 'meta-llama/llama-3.3-70b-instruct:free' }
+  { id: 'cerebras',   label: 'Cerebras',   defaultModel: 'llama3.1-8b' },
+  { id: 'openrouter', label: 'OpenRouter', defaultModel: 'meta-llama/llama-3.2-3b-instruct:free' }
 ]
+
+function resolveCloudModel(provider, savedModel) {
+  const def = CLOUD_PROVIDERS.find(p => p.id === provider)?.defaultModel
+  if (!savedModel) return def
+  const m = savedModel.toLowerCase()
+  if (provider === 'gemini'     && !m.startsWith('gemini'))                         return def
+  if (provider === 'cerebras'   && (m.includes('versatile') || m.includes('/') || m.startsWith('gemini'))) return def
+  if (provider === 'groq'       && (m.startsWith('gemini') || m.includes('/')))    return def
+  if (provider === 'openrouter' && !m.includes('/'))                                return def
+  return savedModel
+}
+
+// Providers + models known to accept images. When the user attaches an image
+// with anything else we surface a clear error instead of silently dropping it.
+function supportsVision(provider, model) {
+  if (provider === 'gemini') return /gemini-(2|1\.5)/.test(model || '')
+  if (provider === 'groq')   return /vision|llama-3\.2-(11b|90b)/i.test(model || '')
+  if (provider === 'openrouter') return /vision|llava|qwen2-vl|gemini|gpt-4|claude/i.test(model || '')
+  return false
+}
 
 const CHAT_SYSTEM = `You are a helpful assistant inside NexTerm, a Windows terminal app.
 Be concise. When the user wants a command, give the exact PowerShell command (no markdown fences).
@@ -56,6 +76,9 @@ export default function AiChat({ onClose }) {
   const [busy,     setBusy]     = useState(false)
   const [error,    setError]    = useState(null)
   const [showHistory, setShowHistory] = useState(false)
+  // Streaming state — tokens arrive in real time and accumulate here
+  const [streamingText, setStreamingText] = useState('')
+  const [streamId, setStreamId] = useState(null)
 
   // Auto-captured terminal context (last 30 lines of active pane when chat opened).
   // User can toggle whether to send it with the next message.
@@ -77,7 +100,7 @@ export default function AiChat({ onClose }) {
   const mode     = ai.mode || 'cloud'
   const provider = mode === 'local' ? 'ollama' : (ai.cloud?.provider || 'groq')
   const model    = mode === 'local' ? (ai.local?.model || 'qwen2.5-coder:7b')
-                                    : (ai.cloud?.model || 'llama-3.3-70b-versatile')
+                                    : resolveCloudModel(provider, ai.cloud?.model)
 
   // Load conversation list
   async function refreshConvs() {
@@ -217,25 +240,37 @@ export default function AiChat({ onClose }) {
     }
 
     // Build the user message (include terminal context + attachments)
-    const attMeta = attachments.map(a => ({ name: a.name, kind: a.kind, size: a.size }))
+    const attMeta = attachments.map(a => ({ name: a.name, kind: a.kind, size: a.size, ext: a.ext, pageCount: a.pageCount }))
     let userContent = text
 
     // Re-capture LIVE terminal context at send time so we see the latest output,
     // not a stale snapshot from when the chat was opened.
-    const liveCtx = useTermCtx ? captureActivePaneContext(30) : null
+    // If the user is asking about an attached file, skip terminal context — it
+    // dominates the prompt and pushes the file out of attention.
+    const includeTerm = useTermCtx && attachments.length === 0
+    const liveCtx = includeTerm ? captureActivePaneContext(30) : null
     if (liveCtx?.output) {
       userContent =
         `[Current terminal — tab "${liveCtx.tabName}"${liveCtx.cwd ? `, cwd ${liveCtx.cwd}` : ''}]\n` +
         '```\n' + liveCtx.output + '\n```\n\n' +
         text
     }
+    const imageAtts = attachments.filter(a => a.kind === 'image')
+    if (imageAtts.length > 0 && !supportsVision(provider, model)) {
+      setError(`Current model (${provider}/${model}) doesn't support images. Switch to Gemini 2.0 Flash, a Groq vision model, or an OpenRouter vision model.`)
+      setBusy(false)
+      return
+    }
     if (attachments.length > 0) {
       const blocks = attachments.map(a => {
         if (a.kind === 'text') {
-          return `\n\n--- attached file: ${a.name} ---\n${a.text}\n--- end ${a.name} ---`
+          const header = a.ext === 'pdf'
+            ? `--- attached PDF: ${a.name} (${a.pageCount || '?'} pages${a.truncated ? ', truncated' : ''}) ---`
+            : `--- attached file: ${a.name} ---`
+          return `\n\n${header}\n${a.text}\n--- end ${a.name} ---`
         }
         if (a.kind === 'image') {
-          return `\n\n[image attached: ${a.name}, ${(a.size/1024).toFixed(1)} KB — note: this model may not support images]`
+          return `\n\n[image attached: ${a.name}]`
         }
         return ''
       }).join('')
@@ -272,32 +307,75 @@ export default function AiChat({ onClose }) {
       ).join('\n\n')
 
       const t0 = Date.now()
-      const r = await window.nexterm.ai.complete({
+      // Extract images for the multimodal payload — only the current turn's images,
+      // not images from earlier messages (those are referenced by name in the text history).
+      const imagesPayload = imageAtts.map(a => ({
+        mime: `image/${a.ext === 'jpg' ? 'jpeg' : a.ext}`,
+        dataBase64: a.dataBase64
+      }))
+      const r = await window.nexterm.ai.streamStart({
         provider, model, apiKey,
         system: CHAT_SYSTEM,
-        prompt: historyTxt + '\n\nAssistant:'
+        prompt: historyTxt + '\n\nAssistant:',
+        ...(imagesPayload.length > 0 ? { images: imagesPayload } : {})
       })
-      const dt = Date.now() - t0
-
-      if (!r?.ok) {
-        setError(r?.error || 'AI request failed')
+      if (!r?.streamId) {
+        setError('Failed to start AI stream')
         setBusy(false)
         return
       }
-      const reply = (r.text || '').trim()
-      if (!reply) {
-        setError(`Empty response from ${provider}/${model}. Try again or pick a different model.`)
-        setBusy(false)
-        return
-      }
+      setStreamId(r.streamId)
+      setStreamingText('')
 
-      const asst = await window.nexterm.ai.msgAppend({
-        conversationId: convId,
-        role: 'assistant',
-        content: reply
+      // Subscribe to chunk events; resolve when end/error fires
+      await new Promise(resolve => {
+        let buf = ''
+        const off = window.nexterm.ai.onStreamEvent((evt) => {
+          if (evt.streamId !== r.streamId) return
+          if (evt.type === 'chunk') {
+            buf += evt.text
+            setStreamingText(buf)
+          } else if (evt.type === 'info') {
+            // Auto-failover happened — prepend a small notice so it's visible
+            // in the streaming bubble.
+            buf = `_${evt.text}_\n\n` + buf
+            setStreamingText(buf)
+          } else if (evt.type === 'end') {
+            const reply = buf.trim()
+            const wasCancelled = !!evt.cancelled
+            off()
+            ;(async () => {
+              if (!reply) {
+                if (!wasCancelled) {
+                  setError(`Empty response from ${provider}/${model}. Try again or pick a different model.`)
+                }
+              } else {
+                const content = wasCancelled ? reply + '\n\n_[stopped]_' : reply
+                const asst = await window.nexterm.ai.msgAppend({
+                  conversationId: convId,
+                  role: 'assistant',
+                  content
+                })
+                setMessages(m => [...m, {
+                  id: asst.id, role: 'assistant',
+                  content, attachments: [],
+                  created_at: asst.created_at
+                }])
+              }
+              setStreamingText('')
+              setStreamId(null)
+              console.log(`[AiChat] streamed in ${Date.now() - t0}ms${wasCancelled ? ' (cancelled)' : ''}`)
+              resolve()
+            })()
+          } else if (evt.type === 'error') {
+            off()
+            setError(evt.error || 'Stream error')
+            setStreamingText('')
+            setStreamId(null)
+            resolve()
+          }
+        })
       })
-      setMessages(m => [...m, { id: asst.id, role: 'assistant', content: reply, attachments: [], created_at: asst.created_at }])
-      console.log(`[AiChat] response in ${dt}ms`)
     } catch (e) {
       setError(String(e?.message || e))
     } finally {
@@ -374,13 +452,23 @@ export default function AiChat({ onClose }) {
         </div>
       )}
 
-      {/* Terminal-context badge — always shown when active pane has content.
-          Toggling sends the LIVE terminal state with the next message. */}
+      {/* Terminal-context badge — shown when active pane has output.
+          Auto-disabled when files are attached (the file is what you want
+          to ask about, terminal would just dominate the prompt). */}
       {termCtx?.output && (
-        <div className="ai-chat-ctx-badge">
+        <div className="ai-chat-ctx-badge" style={attachments.length > 0 ? { opacity: 0.5 } : undefined}>
           <label className="ai-chat-ctx-toggle">
-            <input type="checkbox" checked={useTermCtx} onChange={e => setUseTermCtx(e.target.checked)} />
-            <span>Send current terminal output with my next message</span>
+            <input
+              type="checkbox"
+              checked={useTermCtx && attachments.length === 0}
+              disabled={attachments.length > 0}
+              onChange={e => setUseTermCtx(e.target.checked)}
+            />
+            <span>
+              {attachments.length > 0
+                ? 'Terminal output muted while a file is attached'
+                : 'Include current terminal output with my next message'}
+            </span>
           </label>
           <span className="ai-chat-ctx-meta" title={termCtx.output}>
             {termCtx.tabName} · {termCtx.output.split('\n').length} lines
@@ -410,9 +498,13 @@ export default function AiChat({ onClose }) {
         {busy && (
           <div className="ai-chat-msg ai-chat-msg-assistant">
             <div className="ai-chat-msg-role">Assistant</div>
-            <div className="ai-chat-msg-body ai-chat-thinking">
-              <span className="ai-bar-spinner" /> thinking with <strong>{provider}</strong> ({model.split(/[\\/:]/).pop()})…
-            </div>
+            {streamingText ? (
+              <Message msg={{ id: '__streaming__', role: 'assistant', content: streamingText, attachments: [] }} onInsert={insertIntoTerminal} />
+            ) : (
+              <div className="ai-chat-msg-body ai-chat-thinking">
+                <span className="ai-bar-spinner" /> connecting to <strong>{provider}</strong> ({model.split(/[\\/:]/).pop()})…
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -423,7 +515,11 @@ export default function AiChat({ onClose }) {
         <div className="ai-chat-attachments">
           {attachments.map((a, i) => (
             <span key={i} className="ai-chat-chip">
-              📎 {a.name} <span style={{ opacity: 0.6 }}>· {(a.size/1024).toFixed(1)} KB</span>
+              {a.ext === 'pdf' ? '📄' : '📎'} {a.name}
+              <span style={{ opacity: 0.6 }}>
+                {' · '}{(a.size/1024).toFixed(1)} KB
+                {a.ext === 'pdf' && a.pageCount ? ` · ${a.pageCount}p` : ''}
+              </span>
               <button onClick={() => removeAttachment(i)}>×</button>
             </span>
           ))}
@@ -444,13 +540,23 @@ export default function AiChat({ onClose }) {
           disabled={busy}
           rows={1}
         />
-        <button
-          className="btn-primary ai-chat-send"
-          onClick={send}
-          disabled={busy || (!input.trim() && attachments.length === 0)}
-        >
-          {busy ? '…' : '↗'}
-        </button>
+        {busy && streamId ? (
+          <button
+            className="btn-danger ai-chat-send"
+            onClick={() => window.nexterm.ai.streamCancel(streamId)}
+            title="Stop generating"
+          >
+            ◼
+          </button>
+        ) : (
+          <button
+            className="btn-primary ai-chat-send"
+            onClick={send}
+            disabled={busy || (!input.trim() && attachments.length === 0)}
+          >
+            {busy ? '…' : '↗'}
+          </button>
+        )}
       </div>
 
       <div className="ai-chat-footer">

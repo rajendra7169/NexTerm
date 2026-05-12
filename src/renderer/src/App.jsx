@@ -34,6 +34,8 @@ function stripPane(pane, cwds) {
 import TitleBar from './components/TitleBar'
 import TabBar from './components/TabBar'
 import PaneSplitter from './components/PaneSplitter'
+import CoderEditor from './components/Editor'
+import MenuBar from './components/MenuBar'
 import Settings from './components/Settings'
 import CommandPalette from './components/CommandPalette'
 import HistoryPanel from './components/HistoryPanel'
@@ -68,6 +70,15 @@ export default function App() {
     return off
   }, [])
 
+
+  // Listen for live settings changes from OTHER NexTerm windows so the
+  // theme, fonts, etc. stay in sync across windows of the same app.
+  useEffect(() => {
+    const off = window.nexterm.settings.onChanged?.((s) => {
+      if (s) setSettings(s)
+    })
+    return () => { if (typeof off === 'function') off() }
+  }, [setSettings])
 
   useEffect(() => {
     (async () => {
@@ -146,7 +157,10 @@ export default function App() {
         }
       }
 
-      // Restore last session if enabled
+      // Restore last session if enabled — but NOT when this window was opened
+      // via window:openWith with a bootstrap hash, otherwise the bootstrap's
+      // editor/blank tab would be immediately overwritten by saved terminals.
+      if (window.__nextermBootstrap) return
       const session = await window.nexterm.session.get()
       if (session?.tabs?.length) {
         // Strip transient fields, regen pane IDs so PTYs get fresh ones
@@ -173,8 +187,39 @@ export default function App() {
     })()
   }, [])
 
-  // Persist current session whenever tabs change
+  // Child-window bootstrap. When the window was opened via `window:openWith`,
+  // the URL hash carries instructions like #bootstrap=editor:<path> or =blank.
+  // We set a global flag BEFORE the async session-restore effect runs so it
+  // knows to skip — otherwise session restore would overwrite the bootstrap
+  // editor tab with saved terminal tabs.
+  const hasBootstrap = (window.location.hash || '').includes('bootstrap=')
+  if (hasBootstrap) window.__nextermBootstrap = true
+
   useEffect(() => {
+    const hash = window.location.hash || ''
+    const m = hash.match(/bootstrap=([^&]+)/)
+    if (!m) return
+    const payload = decodeURIComponent(m[1])
+    if (payload === 'blank') {
+      // Replace whatever the default first tab is with a single fresh terminal.
+      const { tabs: ts, addTab: at, removeTab: rm } = useStore.getState()
+      const fresh = at()
+      ts.filter(t => t.id !== fresh.id).forEach(t => rm(t.id))
+    } else if (payload.startsWith('editor:')) {
+      const dir = payload.slice('editor:'.length)
+      const { addEditorTab: ae, tabs: ts, removeTab: rm } = useStore.getState()
+      const editor = ae(dir)
+      ts.filter(t => t.id !== editor.id).forEach(t => rm(t.id))
+    }
+    // Clear the hash so a refresh doesn't re-bootstrap.
+    try { window.history.replaceState(null, '', window.location.pathname) } catch {}
+  }, [])
+
+  // Persist current session whenever tabs change.
+  // Skip in child windows (bootstrap flag set) so they don't overwrite the
+  // main window's saved tabs with their own editor / blank state.
+  useEffect(() => {
+    if (window.__nextermBootstrap) return
     if (settings.restoreSession === false) return
     const snapshot = {
       tabs: tabs.map(t => ({
@@ -336,8 +381,27 @@ export default function App() {
         onHistory={()  => setShowHistory(s => !s)}
         onPalette={()  => setShowPalette(s => !s)}
         onProfiles={() => setShowProfiles(s => !s)}
+        onAi={()       => setShowAiChat(s => !s)}
       />
-      <TabBar />
+      {(() => {
+        const activeTab = tabs.find(t => t.id === activeId)
+        const inCoder = activeTab?.type === 'editor'
+        const hideTabs = inCoder && settings.hideTabsInCoder !== false
+        return (
+          <>
+            {inCoder && (
+              <MenuBar
+                onSettings={() => setShowSettings(s => !s)}
+                onHistory={()  => setShowHistory(s => !s)}
+                onPalette={()  => setShowPalette(s => !s)}
+                onProfiles={() => setShowProfiles(s => !s)}
+                onAi={()       => setShowAiChat(s => !s)}
+              />
+            )}
+            {!hideTabs && <TabBar />}
+          </>
+        )
+      })()}
 
       <div className="main-area">
         <div className="terminal-area">
@@ -346,12 +410,16 @@ export default function App() {
               key={tab.id}
               className={`tab-content ${tab.id === activeId ? '' : 'hidden'}`}
             >
-              <PaneSplitter
-                pane={tab.root}
-                tabId={tab.id}
-                tabActive={tab.id === activeId}
-                activePaneId={tab.activePane}
-              />
+              {tab.type === 'editor' ? (
+                <CoderEditor tab={tab} active={tab.id === activeId} />
+              ) : (
+                <PaneSplitter
+                  pane={tab.root}
+                  tabId={tab.id}
+                  tabActive={tab.id === activeId}
+                  activePaneId={tab.activePane}
+                />
+              )}
             </div>
           ))}
         </div>

@@ -4,9 +4,9 @@
 
 # NexTerm
 
-**The modern, AI-powered terminal for Windows — free, private, and built from scratch.**
+**The modern, AI-powered terminal *and* code editor for Windows — free, private, and built from scratch.**
 
-🤖 *Built-in AI chat with terminal context · SSH/SFTP · Recording · Snippets · 19 themes · Workspaces — all in one installer.*
+🤖 *AI chat + ghost-text autocomplete · Built-in code editor (Monaco) with project mode · SSH/SFTP · Multi-window · 19 themes · Workspaces — all in one installer.*
 
 [![Download for Windows](https://img.shields.io/badge/Download-Windows%20Installer-2563eb?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/rajendra7169/NexTerm/releases/latest)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20Noncommercial-22c55e?style=for-the-badge)](LICENSE)
@@ -91,21 +91,63 @@ Most "free" Windows terminals are either bare-bones or have feature paywalls hid
 
 ## 🚀 Features
 
-### 🤖 AI Assistant — built right into the terminal
+### 🧑‍💻 Coder Mode — open & edit projects right inside NexTerm
+
+NexTerm isn't just a terminal anymore. **Open any folder as a project** and you get a real code editor (Monaco — the engine behind VS Code) alongside the terminal.
+
+**How to open a project**
+
+- Tab bar **`▾` arrow → Coder mode → Open Project…** (folder picker)
+- Or from the **File** menu in editor mode
+
+**What you get**
+
+- **Monaco editor** — full-feature code editing with syntax highlighting for 70+ languages out of the box (TS, JS, Python, Go, Rust, Java, C++, C#, Ruby, PHP, Shell, PowerShell, YAML, SQL, Markdown, HTML, CSS, etc.) plus a built-in **Dart** tokenizer for Flutter projects
+- **File tree sidebar** — project name on top, compact icon buttons for new file / new folder / refresh; **inline rename and inline create** (no broken `prompt()` dialogs)
+- **Multi-file tabs** — open many files, dirty `•` indicator on unsaved changes, **Ctrl+S** to save, confirm before closing unsaved
+- **Bottom-sheet terminal** (**Ctrl+\`**) — VS Code-style terminal panel slides up at the bottom of the editor with cwd already set to your project root. Drag the divider to resize.
+- **VS Code-style top menu** — File / Edit / View / Terminal / Project / AI / Help. Only appears in editor mode.
+- **Theme-aware Monaco** — editor colors pick up your active NexTerm theme automatically
+- **Auto-save** (optional) — saves dirty files after an idle pause; per-file dirty tracking persists across tab switches
+- **Separate font sizes** for code (Monaco) and tree/tabs so you can have small chrome with large code, or vice versa
+- **Watch-on-disk** — outside edits (git pull, etc.) refresh the tree automatically
+- **Hide tab bar in Coder mode** (default ON) — editor uses the full vertical height; toggle in View menu or Settings → Coder
+
+**No VS Code extensions** — NexTerm uses Monaco directly, not the proprietary VS Code extension host. We add languages, themes, and snippets via Monarch grammars.
+
+### 🪟 Multi-window
+
+- **Open Project in New Window** (default) — opens the project in a brand-new NexTerm window, leaving your current terminal tabs untouched. Toggle in Settings → Coder.
+- **File → New Window** — fresh blank NexTerm window
+- **Project → Move Current Tab to New Window** — pop the active tab out
+- **Each window has its own tabs and state.** Settings, AI history, profiles, vault are shared across windows.
+
+### 🤖 AI Assistant — chat, autocomplete, and explain
 
 NexTerm has a **side-panel AI chat** that knows what's on your terminal. Press **`Ctrl+Shift+A`** anywhere → chat panel slides in next to your shells, resizing the terminal area (it doesn't overlay).
 
 **What it does**
 
-- **Sees your terminal automatically** — captures the last 30 lines of your active pane on demand, so you can ask *"what does this error mean?"* without copy-pasting anything
-- **Conversational memory** — every chat is saved to a local SQLite database. The AI remembers what you said earlier in the conversation
+- **Streaming responses** — tokens stream into the chat as the model generates them, with a Stop button to cancel mid-response
+- **Sees your terminal automatically** — captures the last 30 lines of your active pane on demand (auto-disabled when you attach a file so the file gets full attention)
+- **Conversational memory** — every chat is saved to a local SQLite database
 - **History dropdown** — resume any previous conversation, rename, delete; full search across all chats
-- **Multi-turn** — ask follow-ups, request rewrites, dig into output
-- **Code-block actions** — every code fence in the AI's reply gets **Copy / Insert / ▶ Run** buttons. One click and the suggested command lands in your terminal
-- **Attach files for context** — drag any file (text, code, log, config, PDF, image up to 2 MB) into the chat; the AI uses it
-- **Resizable side panel + fullscreen toggle** — drag the left edge, or hit ⛶ to expand chat across the whole window
+- **Code-block actions** — every code fence gets **Copy / Insert / ▶ Run** buttons. One click and the suggested command lands in your terminal
+- **Attach files for context** — text, code, log, config, **PDFs (parsed via pdfjs)**, and **images** (with multimodal models — Gemini, Groq vision, OpenRouter vision). Up to 2 MB per file.
+- **Auto-failover between providers** — if Groq rate-limits, the chat silently retries with Gemini, Cerebras, or OpenRouter (whichever has a key in the vault). Only kicks in on 429/quota errors — auth or model errors still surface.
+- **Smart model fallback** — if your saved model name doesn't match the selected provider, NexTerm uses the provider's default automatically (no more "model not found" after switching providers)
+- **Resizable side panel + fullscreen toggle**
 
-**Three ways to run the model, all free**
+### 👻 Ghost-text autocomplete (local-only, free, private)
+
+As you type a command in any pane, a small **local** AI model predicts the rest of the line. Press **Tab** to accept the suggestion. Press anything else to dismiss.
+
+- **Local Ollama only** — nothing ever leaves your machine, no API calls, no quotas
+- **Default model**: `qwen2.5-coder:1.5b` (~1 GB, fast on CPU). Override in Settings → AI.
+- **Debounced** — only fires after you pause typing, configurable (default 400ms)
+- **Off by default** — turn on in Settings → AI → Ghost-text autocomplete
+
+**Three ways to run the chat model, all free**
 
 | Mode | What it is | Setup | Privacy |
 |---|---|---|---|
@@ -115,7 +157,7 @@ NexTerm has a **side-panel AI chat** that knows what's on your terminal. Press *
 
 **API keys never touch `settings.json`** — they're encrypted with DPAPI (Electron `safeStorage`) and stored in NexTerm's vault.
 
-**Hardware-aware** — Settings → AI detects your CPU/RAM/GPU and recommends the right model tier (S/A/B/C/D) so a low-end laptop doesn't waste hours pulling a 70B model that won't run.
+**Hardware-aware** — Settings → AI detects your CPU/RAM/GPU and recommends the right model tier so a low-end laptop doesn't waste hours pulling a 70B model that won't run.
 
 **Privacy controls** — toggle individual context bits (cwd, last command, redact env vars, redact home path). Local mode never sends anything off your machine.
 
@@ -199,6 +241,12 @@ NexTerm has a **side-panel AI chat** that knows what's on your terminal. Press *
 | Command palette | `Ctrl+Shift+P` |
 | AI Chat panel | `Ctrl+Shift+A` |
 | Snippets | `Ctrl+Alt+S` |
+| Open Project (Coder mode) | `Ctrl+Shift+O` (in editor menu) |
+| New NexTerm window | `Ctrl+Shift+N` (in editor menu) |
+| Save current file (Coder) | `Ctrl+S` |
+| Toggle bottom terminal (Coder) | `` Ctrl+` `` |
+| Close current file tab (Coder) | `Ctrl+W` |
+| Accept ghost-text suggestion | `Tab` |
 | Find in tab | `Ctrl+F` |
 | Find across all tabs | `Ctrl+Shift+F` |
 | Save scrollback | `Ctrl+Shift+S` |
@@ -258,9 +306,11 @@ The signed-style installer lands in `release/NexTerm-Setup-<version>.exe`.
 - **Electron 30** + electron-vite + electron-builder
 - **React 18** + Zustand
 - **xterm.js v5** (with fit / search / web-links / image addons)
+- **Monaco editor** + `@monaco-editor/react` for Coder mode
 - **node-pty** for the PTY layer
-- **better-sqlite3** for history / profiles / secrets
+- **better-sqlite3** for history / profiles / secrets / AI conversations
 - **ssh2** for SFTP
+- **pdfjs-dist** for PDF text extraction (AI attachments)
 
 ---
 

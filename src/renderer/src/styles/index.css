@@ -2426,3 +2426,352 @@ body.bg-effect .shell-menu {
   transition: background 0.12s;
 }
 .btn-danger:hover { background: rgba(247,118,142,0.12); }
+
+/* ── Coder mode: file tree + Monaco editor ───────────────────────────── */
+.coder-shell {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  overflow: hidden;
+}
+
+.file-tree {
+  flex: 0 0 240px;
+  min-width: 180px;
+  max-width: 480px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: var(--coder-tree-font-size, 12px);
+  user-select: none;
+}
+.ft-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+}
+.ft-project-name {
+  flex: 1;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--fg);
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ft-toolbar-actions {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.ft-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.65;
+  padding: 0;
+}
+.ft-icon-btn:hover { background: rgba(255,255,255,0.08); opacity: 1; }
+.ft-icon-btn svg { display: block; }
+.ft-list {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 4px 0;
+}
+.ft-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ft-row:hover { background: rgba(255,255,255,0.04); }
+.ft-row.active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--fg);
+}
+.ft-icon { flex: 0 0 auto; font-size: 12px; }
+.ft-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.ft-loading, .ft-empty { padding: 4px 8px; opacity: 0.5; font-size: 11px; }
+.ft-row-edit { padding-top: 1px; padding-bottom: 1px; }
+.ft-input {
+  flex: 1;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+}
+.ft-input:focus { border-color: var(--accent); }
+.ft-context {
+  position: fixed;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 140px;
+  z-index: 1000;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.ft-context > div {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 3px;
+}
+.ft-context > div:hover { background: rgba(255,255,255,0.06); }
+.ft-context > div.danger { color: #ef4444; }
+.ft-context .ft-sep { padding: 0; margin: 4px 0; height: 1px; background: var(--border); cursor: default; }
+
+.coder-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.coder-tabs {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  overflow-x: auto;
+  font-size: var(--coder-tree-font-size, 12px);
+  flex: 0 0 auto;
+}
+.coder-empty-tabs {
+  padding: 8px 12px;
+  opacity: 0.5;
+  font-style: italic;
+}
+.coder-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--muted, #888);
+}
+.coder-tab:hover { background: rgba(255,255,255,0.04); color: var(--fg); }
+.coder-tab.active {
+  background: var(--bg);
+  color: var(--fg);
+  border-bottom: 1px solid var(--bg);
+  margin-bottom: -1px;
+}
+.coder-tab-close {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  opacity: 0.6;
+}
+.coder-tab-close:hover { opacity: 1; color: #ef4444; }
+.coder-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+.coder-editor > * {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.coder-welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  text-align: center;
+  opacity: 0.85;
+}
+.coder-welcome h2 { margin: 0 0 6px; }
+
+/* Bottom-sheet terminal inside coder mode (VS Code Ctrl+` style) */
+.coder-term-toggle {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 3px 10px;
+  margin: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+.coder-term-toggle:hover { background: rgba(255,255,255,0.12); }
+
+.coder-bottom-handle {
+  height: 4px;
+  background: var(--border);
+  cursor: ns-resize;
+  flex: 0 0 auto;
+}
+.coder-bottom-handle:hover {
+  background: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.coder-bottom-sheet {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  min-height: 80px;
+  max-height: 80vh;
+}
+.coder-bottom-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.coder-bottom-title {
+  flex: 1;
+  opacity: 0.75;
+  font-family: 'Cascadia Code', Consolas, monospace;
+}
+.coder-bottom-close {
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  opacity: 0.6;
+  border-radius: 3px;
+}
+.coder-bottom-close:hover { opacity: 1; background: rgba(255,0,0,0.15); color: #ef4444; }
+.coder-bottom-term {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+.coder-bottom-term > * { position: absolute; inset: 0; }
+
+/* ── VS Code-style top menu bar (lives as its own row under titlebar) ─ */
+.menu-bar {
+  display: flex;
+  align-items: stretch;
+  height: 26px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--bg) 90%, #000 10%);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 100;
+  pointer-events: auto;
+}
+.menu-bar-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  cursor: pointer;
+  color: var(--fg);
+  opacity: 0.85;
+  user-select: none;
+  /* Reset native button defaults */
+  background: transparent;
+  border: 0;
+  font: inherit;
+  height: 100%;
+  pointer-events: auto !important;
+}
+.menu-item {
+  background: transparent;
+  border: 0;
+  font: inherit;
+  width: 100%;
+  text-align: left;
+  pointer-events: auto !important;
+}
+.menu-bar-item:hover { opacity: 1; background: rgba(255,255,255,0.06); }
+.menu-bar-item.open { background: rgba(255,255,255,0.1); opacity: 1; }
+.menu-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 240px;
+  padding: 4px 0;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+  z-index: 9000;
+  font-size: 12px;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 5px 14px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.menu-item:hover { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+.menu-item.disabled { opacity: 0.4; cursor: default; }
+.menu-item.disabled:hover { background: transparent; }
+.menu-item-label { flex: 1; white-space: nowrap; }
+.menu-item-shortcut { opacity: 0.55; font-size: 10px; font-family: 'Cascadia Code', Consolas, monospace; }
+.menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+.menu-bar-spacer { flex: 1; }
+.menu-bar-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 100%;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  cursor: pointer;
+  opacity: 0.65;
+  padding: 0;
+}
+.menu-bar-action:hover { background: rgba(255,255,255,0.08); opacity: 1; }
+.menu-bar-action.active {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent);
+  opacity: 1;
+}
+.menu-bar-action svg { display: block; }
