@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { THEMES } from '../themes'
 import AnsiText from './AnsiText'
 import { ACTIONS, getKey, formatCombo } from '../shortcuts'
+import GpuRuntimeManager from './GpuRuntimeManager'
 
 const SHELLS = [
   { label: 'PowerShell 7 (pwsh)',  value: 'pwsh.exe' },
@@ -2751,6 +2752,7 @@ function AiSection({ settings, set }) {
       </div>
 
       {ai.mode === 'bundled' && <BundledModelsSection ai={ai} upd={upd} />}
+      {ai.mode === 'bundled' && <GpuRuntimeManager />}
 
       {ai.mode === 'cloud' && (() => {
         const provInfo = CLOUD_PROVIDERS.find(p => p.id === (ai.cloud?.provider || 'groq')) || CLOUD_PROVIDERS[0]

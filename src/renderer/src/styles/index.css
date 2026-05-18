@@ -5222,3 +5222,64 @@ body.bg-effect .shell-menu {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ── GPU runtime manager (online installer flow) ── */
+.gpu-panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.02);
+}
+.gpu-panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.gpu-panel-title { font-weight: 600; font-size: 13px; }
+.gpu-panel-sub { font-size: 11px; opacity: 0.7; margin-top: 2px; }
+.gpu-panel-recommended { font-size: 11px; opacity: 0.85; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px dashed var(--border); }
+.gpu-panel-list { display: flex; flex-direction: column; gap: 8px; }
+.gpu-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 4px; background: rgba(255,255,255,0.02); border: 1px solid transparent; }
+.gpu-row.recommended { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.gpu-row.installed { background: rgba(109,191,109,0.05); }
+.gpu-row-main { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.gpu-row-label { font-weight: 500; font-size: 12px; }
+.gpu-row-badge { font-size: 9px; padding: 1px 6px; border-radius: 8px; background: var(--accent); color: var(--bg); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }
+.gpu-row-badge.bundled    { background: rgba(255,255,255,0.15); color: var(--fg); }
+.gpu-row-badge.downloaded { background: #6dbf6d; color: var(--bg); }
+.gpu-row-size { font-size: 11px; opacity: 0.55; }
+.gpu-row-progress { display: flex; align-items: center; gap: 8px; font-size: 11px; flex: 0 0 auto; min-width: 220px; }
+.gpu-row-note { font-size: 11px; opacity: 0.6; font-style: italic; }
+.gpu-btn {
+  border: 0;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.gpu-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.gpu-btn-primary { background: var(--accent); color: var(--bg); }
+.gpu-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+.gpu-btn-secondary { background: rgba(255,255,255,0.08); color: var(--fg); }
+.gpu-btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.14); }
+.gpu-btn-ghost { background: transparent; color: var(--fg); opacity: 0.7; }
+.gpu-btn-ghost:hover:not(:disabled) { opacity: 1; background: rgba(255,255,255,0.06); }
+.gpu-bar { flex: 1; min-width: 80px; height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden; }
+.gpu-bar-fill { height: 100%; background: var(--accent); transition: width 0.15s ease-out; }
+.gpu-error { margin-top: 10px; padding: 6px 10px; border-radius: 4px; background: rgba(184,90,90,0.1); color: #ef9a9a; font-size: 11px; }
+
+/* Compact banner mode — shown in the chat as a one-line nudge on first launch */
+.gpu-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 8px 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  font-size: 12px;
+}
+.gpu-banner-icon { font-size: 18px; flex: 0 0 auto; }
+.gpu-banner-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.gpu-banner-sub { font-size: 10.5px; opacity: 0.7; }
+.gpu-banner-progress { display: flex; align-items: center; gap: 8px; font-size: 11px; min-width: 200px; }

@@ -158,6 +158,17 @@ contextBridge.exposeInMainWorld('nexterm', {
     listLocalModels: ()      => ipcRenderer.invoke('ai:listLocalModels'),
     detectClaudeCli: ()      => ipcRenderer.invoke('ai:detectClaudeCli'),
     claudeLogin:     ()      => ipcRenderer.invoke('ai:claudeLogin'),
+    // GPU runtime downloader (online-installer flow)
+    classifyGpuRuntime: ()              => ipcRenderer.invoke('ai:classifyGpuRuntime'),
+    listGpuRuntimes:    ()              => ipcRenderer.invoke('ai:listGpuRuntimes'),
+    installGpuRuntime:  (runtimeId, version) => ipcRenderer.invoke('ai:installGpuRuntime', { runtimeId, version }),
+    cancelGpuRuntime:   (runtimeId)     => ipcRenderer.invoke('ai:cancelGpuRuntime',  runtimeId),
+    uninstallGpuRuntime:(runtimeId)     => ipcRenderer.invoke('ai:uninstallGpuRuntime', runtimeId),
+    onGpuInstallProgress: (cb) => {
+      const fn = (_, evt) => cb(evt)
+      ipcRenderer.on('ai:gpuInstall:progress', fn)
+      return () => ipcRenderer.removeListener('ai:gpuInstall:progress', fn)
+    },
     complete:        (opts)  => ipcRenderer.invoke('ai:complete', opts),
     streamStart:     (opts)  => ipcRenderer.invoke('ai:stream:start', opts),
     streamCancel:    (id)    => ipcRenderer.invoke('ai:stream:cancel', id),

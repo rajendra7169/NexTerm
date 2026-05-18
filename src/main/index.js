@@ -8,6 +8,10 @@ import { execSync, spawn as cpSpawn } from 'child_process'
 import { renderText } from './font.js'
 import { Client as SshClient } from 'ssh2'
 import yaml from 'js-yaml'
+// gpu-runtime patches Node's module search paths as a side effect of
+// being imported (see gpu-runtime.js), so the AI module below can resolve
+// downloaded GPU DLLs from userData. MUST be imported BEFORE './ai/index.js'.
+import * as gpuRuntime from './ai/gpu-runtime.js'
 import * as ai from './ai/index.js'
 import { extractPdfText } from './ai/pdf-extract.js'
 import { registerProjectIpc } from './project.js'
@@ -1813,6 +1817,20 @@ function setupIPC() {
   // Claude Code CLI detection + login (subscription auth path).
   ipcMain.handle('ai:detectClaudeCli', () => ai.anthropicCli.detectClaudeCli())
   ipcMain.handle('ai:claudeLogin',     () => ai.anthropicCli.startLoginFlow())
+
+  // GPU runtime downloader — used by the "online" installer's first-launch
+  // flow. Detects the right runtime for the user's GPU and lets the UI
+  // download/install/uninstall it without bundling 180+ MB up front.
+  ipcMain.handle('ai:classifyGpuRuntime', () => ai.classifyGpuRuntime())
+  ipcMain.handle('ai:listGpuRuntimes',    () => gpuRuntime.listRuntimesWithStatus())
+  ipcMain.handle('ai:installGpuRuntime',  async (event, { runtimeId, version } = {}) => {
+    const send = (evt) => {
+      try { event.sender.send('ai:gpuInstall:progress', { runtimeId, ...evt }) } catch {}
+    }
+    return gpuRuntime.installRuntime(runtimeId, { version, onProgress: send })
+  })
+  ipcMain.handle('ai:cancelGpuRuntime',    (_, runtimeId)  => gpuRuntime.cancelInstall(runtimeId))
+  ipcMain.handle('ai:uninstallGpuRuntime', (_, runtimeId)  => gpuRuntime.uninstallRuntime(runtimeId))
   ipcMain.handle('ai:complete', async (_, opts) => {
     try {
       const text = await ai.complete(opts || {})

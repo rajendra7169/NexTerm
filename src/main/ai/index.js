@@ -8,7 +8,7 @@ import * as cerebras     from './providers/cerebras.js'
 import * as anthropic    from './providers/anthropic.js'
 import * as anthropicCli from './providers/anthropic-cli.js'
 import * as bundled      from './bundled-llama.js'
-import { detectHardware, recommendTier, detectGpu } from './hardware.js'
+import { detectHardware, recommendTier, detectGpu, classifyGpuRuntime } from './hardware.js'
 import { detectOllama, isOllamaRunning, listLocalModels, startOllama, stopOllama } from './ollama-manager.js'
 import { installOllama } from './installer.js'
 import { pullModel, deleteModel } from './model-puller.js'
@@ -94,6 +94,7 @@ export {
   detectHardware,
   recommendTier,
   detectGpu,
+  classifyGpuRuntime,
   detectOllama,
   isOllamaRunning,
   listLocalModels,

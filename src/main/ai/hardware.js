@@ -55,6 +55,51 @@ export function detectGpu() {
   return detectNvidia() || detectWmicGpu()
 }
 
+// Classify the detected GPU into which node-llama-cpp runtime variant best
+// matches it. Used by the online installer's first-launch flow to pick which
+// GPU runtime zip to download (cuda for NVIDIA, vulkan for AMD/Intel-Arc,
+// none for integrated/no-GPU machines that should just use CPU).
+//
+// Returns one of:
+//   'cuda'    — NVIDIA GeForce / Quadro / Tesla / RTX (with ≥4 GB VRAM)
+//   'vulkan'  — AMD Radeon (RDNA+) or Intel Arc / Xe-LPG (dedicated)
+//   'none'    — integrated Intel HD/UHD, older AMD APUs, or no GPU detected
+export function classifyGpuRuntime() {
+  const gpu = detectGpu()
+  if (!gpu) return { runtime: 'none', reason: 'No GPU detected', gpu: null }
+
+  const vramGb = (gpu.vramMb || 0) / 1024
+  const name = (gpu.name || '').toLowerCase()
+
+  if (gpu.vendor === 'nvidia') {
+    // NVIDIA → CUDA, but only if there's enough VRAM to be useful.
+    if (vramGb < 2) {
+      return { runtime: 'none', reason: 'NVIDIA GPU but <2GB VRAM — CPU is faster', gpu }
+    }
+    return { runtime: 'cuda', reason: `NVIDIA GPU (${gpu.name}, ${vramGb.toFixed(1)} GB VRAM)`, gpu }
+  }
+
+  if (gpu.vendor === 'amd') {
+    // Modern AMD dGPUs (RX 5000+, RDNA1+) handle Vulkan well. Skip older
+    // integrated APUs whose Vulkan perf is worse than CPU.
+    if (vramGb < 2 || /integrated|apu|vega \d/i.test(name)) {
+      return { runtime: 'none', reason: 'AMD integrated/older — CPU is faster', gpu }
+    }
+    return { runtime: 'vulkan', reason: `AMD GPU (${gpu.name}, ${vramGb.toFixed(1)} GB VRAM)`, gpu }
+  }
+
+  if (gpu.vendor === 'intel') {
+    // Intel Arc dedicated GPUs benefit from Vulkan. Iris Xe / UHD integrated
+    // don't have enough bandwidth to beat CPU on llama.cpp workloads.
+    if (/arc/i.test(name) && vramGb >= 4) {
+      return { runtime: 'vulkan', reason: `Intel Arc (${gpu.name}, ${vramGb.toFixed(1)} GB VRAM)`, gpu }
+    }
+    return { runtime: 'none', reason: 'Intel integrated GPU — CPU is faster', gpu }
+  }
+
+  return { runtime: 'none', reason: `Unknown GPU vendor: ${gpu.vendor}`, gpu }
+}
+
 export function detectHardware() {
   const cpus = os.cpus() || []
   return {

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useStore } from "../store";
 import { paneRegistry } from "./Terminal";
 import AiSetup from "./AiSetup";
+import GpuRuntimeManager from "./GpuRuntimeManager";
 
 // Grab the last N visible lines of the currently active terminal pane.
 // Used as automatic context so the user can ask "what does this error mean"
@@ -890,6 +891,19 @@ export default function AiChat({ onClose }) {
           to ask about, terminal would just dominate the prompt). */}
       {/* The old terminal-context badge is replaced by the "⚠ Errors" toggle
           in the new composer below. */}
+
+      {/* First-launch GPU runtime nudge — only renders when bundled AI is
+          selected AND no matching GPU runtime is installed yet. Dismisses
+          permanently once the user clicks "Not now". The component itself
+          handles the visibility logic (returns null when there's nothing
+          actionable). */}
+      {mode === 'bundled' && !localStorage.getItem('nexterm.gpuBannerDismissed') && (
+        <GpuRuntimeManager compact onDismiss={() => {
+          localStorage.setItem('nexterm.gpuBannerDismissed', '1')
+          // Force a re-render
+          setError(e => e)
+        }} />
+      )}
 
       <div className="ai-chat-messages" ref={scrollRef}>
         {messages.length === 0 && !busy && (
