@@ -68,19 +68,13 @@ export async function startOllama({ timeoutMs = 10_000 } = {}) {
   const info = detectOllama()
   if (!info.installed) return { ok: false, error: 'Ollama is not installed' }
 
-  // Prefer the installer's tray app so the icon appears like normal — falls
-  // back to "ollama serve" if the GUI app isn't found.
-  const localApp = process.env.LOCALAPPDATA
-    ? join(process.env.LOCALAPPDATA, 'Programs', 'Ollama', 'ollama app.exe')
-    : null
-
+  // Run headless — just the API server, no tray icon, no Ollama UI windows.
+  // The "ollama app.exe" tray app would also work but it pops up an icon and
+  // sometimes a chat window, which is intrusive when NexTerm is just using
+  // Ollama as an inference backend.
   try {
-    if (localApp && existsSync(localApp)) {
-      spawn(localApp, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref()
-    } else {
-      const cmd = info.path || 'ollama'
-      spawn(cmd, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
-    }
+    const cmd = info.path || 'ollama'
+    spawn(cmd, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
   } catch (e) {
     return { ok: false, error: String(e?.message || e) }
   }
@@ -92,6 +86,30 @@ export async function startOllama({ timeoutMs = 10_000 } = {}) {
     await new Promise(r => setTimeout(r, 500))
   }
   return { ok: false, error: 'Started Ollama but daemon did not respond in time' }
+}
+
+// Stop the Ollama daemon — frees its RAM. Called when the user switches away
+// from Ollama as their AI backend so it doesn't keep models loaded in the
+// background. On Windows we kill the running ollama processes.
+export async function stopOllama() {
+  try {
+    const running = await isOllamaRunning()
+    if (!running) return { ok: true, alreadyStopped: true }
+  } catch {}
+  try {
+    const { execSync } = await import('node:child_process')
+    if (process.platform === 'win32') {
+      // Kill the daemon AND the tray app if running. /F = force, /T = kill children.
+      try { execSync('taskkill /F /IM "ollama app.exe" /T', { stdio: 'ignore' }) } catch {}
+      try { execSync('taskkill /F /IM ollama.exe /T',         { stdio: 'ignore' }) } catch {}
+    } else {
+      try { execSync('pkill -f "ollama serve"',  { stdio: 'ignore' }) } catch {}
+      try { execSync('pkill -f "ollama app"',    { stdio: 'ignore' }) } catch {}
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
 }
 
 export async function listLocalModels() {

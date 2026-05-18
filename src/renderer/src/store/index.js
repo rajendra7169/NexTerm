@@ -117,9 +117,50 @@ const DEFAULT_SETTINGS = {
   // palette / shortcuts, and can disable this if they prefer split view.
   hideTabsInCoder: true,
 
+  // Recently opened projects (most-recent-first). Persisted in settings so it
+  // survives restarts.
+  recentProjects: [],   // [{ path, name, ts }]
+
+  // Per-context active AI conversation id — survives chat-panel close/open
+  // so the user resumes the same chat when they reopen it for the same
+  // project (or for the terminal context). Cleared only when explicitly
+  // starting a new chat.
+  aiChatActive: {},     // { [projectPathOr__terminal__]: convId }
+
+  // Extensions — community add-ons listed in the Extensions panel. For v1
+  // each "extension" is actually a feature built into NexTerm that's gated
+  // behind an install flag; installing it from the panel just flips the
+  // flag and the feature becomes available. Lets us ship a VS Code-style
+  // marketplace UX without a full extension runtime.
+  installedExtensions: [],   // [extensionId, ...] from the remote registry
+  extensionsRegistryUrl: 'https://cdn.jsdelivr.net/gh/rajendra7169/nexterm-extensions@main/registry.json',
+  // Per-extension config (e.g. anthropic.claude.authMode = 'cli' | 'api')
+  extensionConfig: {},       // { [extensionId]: { ... } }
+
+  // Per-project editor workspace state — VS Code-style "open it in the same
+  // state as last time". Keyed by absolute project path. Each entry is a
+  // snapshot of the editor tab when last closed:
+  //   { openFiles, activeFile, treeExpanded, sidebarMode, sidebarWidth,
+  //     bottomVisible, bottomHeight, aiChatOpen, ts }
+  // Hydrated when addEditorTab(projectPath) opens the project; written by
+  // saveProjectWorkspace whenever the tab's persistable state changes.
+  projectWorkspaces: {},
+
+  // First-launch onboarding flag — once dismissed, the wizard never shows
+  // again unless the user resets settings.
+  welcomeShown: false,
+
+  // Static autocomplete: command suggestions you want to add on top of the
+  // built-in popular-commands list. Edited from Settings → Terminal.
+  popularCommands: [],
+  // Master toggle for the suggestion bar (history + popular + user commands)
+  suggestions: true,
+
   // Coder/Editor preferences
   coder: {
     openInNewWindow:   true,    // "Open Project…" opens in a new window by default
+    restoreLastProject:false,   // reopen the projects you had open last time at launch
+    lastOpenProjects:  [],      // [path] — auto-saved when editor tabs change
     autoSave:          false,   // auto-save dirty files after a brief idle
     autoSaveDelayMs:   1500,    // idle delay before auto-save fires
     fontSize:          13,    // Monaco code font
@@ -131,15 +172,21 @@ const DEFAULT_SETTINGS = {
     lineNumbers:       true,
     bottomTermHeight:  240,
     formatOnSave:      false,
-    confirmOnClose:    true     // ask before closing tab with unsaved changes
+    trimTrailingWhitespace: false,
+    confirmOnClose:    true,    // ask before closing tab with unsaved changes
+    // User-defined code snippets keyed by Monaco language id.
+    // Each snippet: { prefix, body, description }. Body uses Monaco's snippet
+    // syntax — $1, $2, ${1:default} for placeholders.
+    snippets: {}
   },
 
   // AI Assistant — Ctrl+Shift+A natural-language command bar
   ai: {
     enabled:  false,
-    mode:     'cloud',    // 'cloud' | 'local'
+    mode:     'bundled',  // 'cloud' | 'local' (Ollama) | 'bundled' (node-llama-cpp, default)
     cloud:    { provider: 'groq', model: 'llama-3.3-70b-versatile' },
     local:    { model: 'qwen2.5-coder:7b' },
+    bundled:  { model: null },  // model id from the catalog, set after user picks one
     privacy: {
       sendCwd:           true,    // include "Current directory: …" in context
       sendShell:         true,    // include shell name
@@ -147,15 +194,8 @@ const DEFAULT_SETTINGS = {
       redactEnvVars:     true,    // strip API_KEY=… and similar from context
       redactHomePath:    false    // replace C:\Users\<name>\ with ~\
     },
-    // Inline ghost-text autocomplete (like Warp). Local Ollama only — runs
-    // entirely on your machine, no API calls, no quotas, fully private.
-    // Off by default since it needs a local model pulled.
-    autocomplete: {
-      enabled:    false,
-      model:      'qwen2.5-coder:1.5b',  // small + fast; pull via Settings → AI → Local
-      debounceMs: 400,                    // wait this long after last keystroke before firing
-      minChars:   3                        // minimum length of typed text before AI is invoked
-    }
+    // (Removed) AI-based autocomplete. Replaced by a static popular-commands
+    // list (see settings.popularCommands and main process suggestStatic).
     // API keys are stored in the encrypted vault under: ai.<provider>.apiKey
   }
 }
@@ -197,6 +237,10 @@ function createEditorTab(projectPath, name) {
     bottomPane: null,            // leaf pane object once user opens the bottom terminal
     bottomVisible: false,
     bottomHeight: 240,            // pixels
+    sidebarMode: 'explorer',      // 'explorer' | 'git' | null (hidden)
+    sidebarWidth: 260,             // px — user drags to resize
+    treeExpanded: null,            // { [absolutePath]: true } — persists across panel switches
+    revealRequest: 0,              // bumped to request the file tree to reveal/scroll to activeFile
     pinned: false,
     color:  null,
     broadcast: false
@@ -302,8 +346,117 @@ export const useStore = create((set, get) => ({
   // ── Editor tabs (coder mode) ──
   addEditorTab: (projectPath) => {
     const tab = createEditorTab(projectPath)
-    set(s => ({ tabs: [...s.tabs, tab], activeId: tab.id }))
+    let newSettings
+    set(s => {
+      // Hydrate from saved per-project workspace so the tab reopens in the
+      // same state it was closed in (open files, tree expansion, panels).
+      const saved = s.settings.projectWorkspaces?.[projectPath]
+      if (saved) {
+        tab.openFiles    = (saved.openFiles    || []).map(f => typeof f === 'string' ? { path: f, dirty: false } : f)
+        tab.activeFile   =  saved.activeFile   || (tab.openFiles[0]?.path ?? null)
+        tab.treeExpanded =  saved.treeExpanded || null
+        tab.sidebarMode  =  saved.sidebarMode  || 'explorer'
+        tab.sidebarWidth =  saved.sidebarWidth || tab.sidebarWidth
+        tab.bottomVisible = saved.bottomVisible === true
+        tab.bottomHeight =  saved.bottomHeight || tab.bottomHeight
+        tab.aiChatOpen   =  saved.aiChatOpen   === true
+      }
+      // Maintain recentProjects: most-recent-first, deduped, max 12.
+      const name = projectPath.split(/[\\/]/).filter(Boolean).pop() || 'Project'
+      const recent = [
+        { path: projectPath, name, ts: Date.now() },
+        ...(s.settings.recentProjects || []).filter(p => p.path !== projectPath)
+      ].slice(0, 12)
+      newSettings = { ...s.settings, recentProjects: recent }
+      return {
+        tabs: [...s.tabs, tab],
+        activeId: tab.id,
+        settings: newSettings
+      }
+    })
+    // Persist to disk + broadcast to other NexTerm windows so their recent
+    // list updates too. Guarded — if settings haven't loaded yet, in-memory
+    // state is just defaults and writing it would clobber real settings.
+    if (get().settingsLoaded) {
+      try { window.nexterm?.settings.save(newSettings) } catch {}
+    }
     return tab
+  },
+
+  // Snapshot the persistable parts of an editor tab into settings.projectWorkspaces.
+  // Debounced (200 ms) — open-file lists, tree clicks, etc. can fire rapidly
+  // and we don't want to thrash disk on every keystroke.
+  saveProjectWorkspace: (() => {
+    const timers = new Map()
+    return (tabId) => {
+      if (!get().settingsLoaded) return
+      if (timers.has(tabId)) clearTimeout(timers.get(tabId))
+      timers.set(tabId, setTimeout(() => {
+        const tab = get().tabs.find(t => t.id === tabId)
+        if (!tab || tab.type !== 'editor' || !tab.projectPath) return
+        const snap = {
+          openFiles:    (tab.openFiles || []).map(f => f.path),
+          activeFile:    tab.activeFile,
+          treeExpanded:  tab.treeExpanded,
+          sidebarMode:   tab.sidebarMode,
+          sidebarWidth:  tab.sidebarWidth,
+          bottomVisible: tab.bottomVisible === true,
+          bottomHeight:  tab.bottomHeight,
+          aiChatOpen:    tab.aiChatOpen === true,
+          ts: Date.now()
+        }
+        let newSettings
+        set(s => {
+          newSettings = {
+            ...s.settings,
+            projectWorkspaces: { ...(s.settings.projectWorkspaces || {}), [tab.projectPath]: snap }
+          }
+          return { settings: newSettings }
+        })
+        try { window.nexterm?.settings.save(newSettings) } catch {}
+      }, 200))
+    }
+  })(),
+
+  setSidebarMode: (tabId, mode) => {
+    set(s => ({ tabs: s.tabs.map(t => t.id === tabId ? { ...t, sidebarMode: mode } : t) }))
+    get().saveProjectWorkspace(tabId)
+  },
+
+  setSidebarWidth: (tabId, width) => {
+    set(s => ({
+      tabs: s.tabs.map(t => (t.id === tabId && t.type === 'editor')
+        ? { ...t, sidebarWidth: Math.max(160, Math.min(700, width)) }
+        : t)
+    }))
+    get().saveProjectWorkspace(tabId)
+  },
+
+  setAiChatActive: (contextKey, convId) => {
+    let newSettings
+    set(s => {
+      newSettings = {
+        ...s.settings,
+        aiChatActive: { ...(s.settings.aiChatActive || {}), [contextKey]: convId }
+      }
+      return { settings: newSettings }
+    })
+    if (get().settingsLoaded) {
+      try { window.nexterm?.settings.save(newSettings) } catch {}
+    }
+  },
+
+  setTreeExpanded: (tabId, expanded) => {
+    set(s => ({
+      tabs: s.tabs.map(t => (t.id === tabId && t.type === 'editor')
+        ? { ...t, treeExpanded: expanded }
+        : t)
+    }))
+    get().saveProjectWorkspace(tabId)
+  },
+
+  revealActiveFileInTree: (tabId) => {
+    set(s => ({ tabs: s.tabs.map(t => t.id === tabId ? { ...t, revealRequest: (t.revealRequest || 0) + 1, sidebarMode: 'explorer' } : t) }))
   },
 
   openFileInEditor: (tabId, path) => {
@@ -316,10 +469,12 @@ export const useStore = create((set, get) => ({
         return { ...t, openFiles: [...(t.openFiles || []), { path, dirty: false }], activeFile: path }
       })
     }))
+    get().saveProjectWorkspace(tabId)
   },
 
   setEditorActiveFile: (tabId, path) => {
     set(s => ({ tabs: s.tabs.map(t => t.id === tabId ? { ...t, activeFile: path } : t) }))
+    get().saveProjectWorkspace(tabId)
   },
 
   closeFileInEditor: (tabId, path) => {
@@ -332,6 +487,13 @@ export const useStore = create((set, get) => ({
         return { ...t, openFiles, activeFile }
       })
     }))
+    get().saveProjectWorkspace(tabId)
+  },
+
+  // Per-editor-tab AI chat panel visibility, persisted with the workspace.
+  setEditorAiChatOpen: (tabId, open) => {
+    set(s => ({ tabs: s.tabs.map(t => t.id === tabId ? { ...t, aiChatOpen: !!open } : t) }))
+    get().saveProjectWorkspace(tabId)
   },
 
   // Bottom-sheet terminal inside an editor tab (VS Code-style Ctrl+`)
@@ -348,6 +510,7 @@ export const useStore = create((set, get) => ({
         })
       }
     })
+    get().saveProjectWorkspace(tabId)
   },
   closeBottomTerminal: (tabId) => {
     set(s => ({
@@ -356,6 +519,7 @@ export const useStore = create((set, get) => ({
         return { ...t, bottomVisible: false, bottomPane: null }
       })
     }))
+    get().saveProjectWorkspace(tabId)
   },
   setBottomHeight: (tabId, h) => {
     set(s => ({
@@ -363,6 +527,7 @@ export const useStore = create((set, get) => ({
         ? { ...t, bottomHeight: Math.max(80, Math.min(800, h)) }
         : t)
     }))
+    get().saveProjectWorkspace(tabId)
   },
 
   setFileDirty: (tabId, path, dirty) => {
@@ -463,12 +628,22 @@ export const useStore = create((set, get) => ({
     })),
 
   // ── Settings ──
-  setSettings: (settings) => set({ settings }),
+  // settingsLoaded gates ALL disk writes: until we've actually loaded the
+  // user's saved settings from disk, the in-memory state is just defaults,
+  // and we must NEVER write those over the user's real settings. Any save
+  // call that happens during startup (e.g. addEditorTab restoring a tab,
+  // setAiChatActive from a tab init) would otherwise wipe out things like
+  // promptStyle, theme, etc. on every launch.
+  settingsLoaded: false,
+
+  setSettings: (settings) => set({ settings, settingsLoaded: true }),
 
   updateSettings: (patch) => {
     const settings = { ...get().settings, ...patch }
     set({ settings })
-    window.nexterm?.settings.save(settings)
+    if (get().settingsLoaded) {
+      window.nexterm?.settings.save(settings)
+    }
     return settings
   },
 

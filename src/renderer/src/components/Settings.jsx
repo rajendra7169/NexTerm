@@ -1394,6 +1394,19 @@ export default function Settings({ onClose }) {
             <div className="settings-group">
               <div className="settings-row">
                 <div>
+                  <div className="settings-label">Command suggestions</div>
+                  <div className="settings-desc">As you type, NexTerm suggests the rest of the command from your history + a curated list. Press <kbd>Tab</kbd> to accept. No AI, no RAM, no quota.</div>
+                </div>
+                <Toggle
+                  checked={settings.suggestions !== false}
+                  onChange={v => set({ suggestions: v })}
+                />
+              </div>
+
+              <PopularCommandsEditor settings={settings} set={set} />
+
+              <div className="settings-row">
+                <div>
                   <div className="settings-label">Scrollback</div>
                   <div className="settings-desc">Lines of output kept in memory per pane</div>
                 </div>
@@ -1993,6 +2006,194 @@ function resolveCloudModel(provider, savedModel) {
   return savedModel
 }
 
+function CliInstaller() {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState(null)
+  async function install() {
+    setBusy(true); setResult(null)
+    const r = await window.nexterm.project.installCli()
+    setBusy(false)
+    setResult(r)
+  }
+  return (
+    <div className="settings-subcard">
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <button className="btn-primary" onClick={install} disabled={busy}>
+          {busy ? 'Installing…' : 'Install nexterm launcher'}
+        </button>
+        {result?.ok && (
+          <span style={{ color: '#22c55e', fontSize: 11 }}>
+            ✓ Installed at <code>{result.path}</code> — open a new shell and try <code>nexterm .</code>
+          </span>
+        )}
+        {result && !result.ok && (
+          <span style={{ color: '#ef4444', fontSize: 11 }}>⚠ {result.error}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PopularCommandsEditor({ settings, set }) {
+  const list = settings.popularCommands || []
+  const [draft, setDraft] = useState('')
+  function add() {
+    const v = draft.trim()
+    if (!v) return
+    if (list.includes(v)) return
+    set({ popularCommands: [v, ...list].slice(0, 200) })
+    setDraft('')
+  }
+  function removeAt(i) {
+    const next = list.filter((_, idx) => idx !== i)
+    set({ popularCommands: next })
+  }
+  return (
+    <div className="settings-row" style={{ alignItems: 'flex-start', flexDirection: 'column' }}>
+      <div>
+        <div className="settings-label">Your custom commands</div>
+        <div className="settings-desc">Added on top of NexTerm's built-in popular list (git, npm, docker, PowerShell etc.). Your entries take priority. Press Enter to add.</div>
+      </div>
+      <div style={{ display: 'flex', gap: 6, width: '100%', marginTop: 8 }}>
+        <input
+          className="settings-input"
+          placeholder="e.g. ssh me@server -L 5000:localhost:5000"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
+          style={{ flex: 1 }}
+        />
+        <button className="btn-primary" onClick={add} disabled={!draft.trim()}>＋ Add</button>
+      </div>
+      {list.length > 0 && (
+        <div style={{ width: '100%', marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {list.map((cmd, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: 'rgba(255,255,255,0.03)', borderRadius: 4, fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 11 }}>
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{cmd}</span>
+              <button className="btn-secondary" onClick={() => removeAt(i)} style={{ padding: '2px 8px', fontSize: 11 }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SnippetsEditor({ coder, upd }) {
+  const snippets = coder.snippets || {}
+  const [selected, setSelected] = useState(() => Object.keys(snippets)[0] || 'javascript')
+  const [newLang, setNewLang] = useState('')
+
+  const list = snippets[selected] || []
+
+  function updSnippets(updater) {
+    const next = updater(snippets)
+    upd({ snippets: next })
+  }
+
+  function addLanguage() {
+    const lang = newLang.trim()
+    if (!lang) return
+    updSnippets(s => ({ ...s, [lang]: s[lang] || [] }))
+    setSelected(lang)
+    setNewLang('')
+  }
+  function removeLanguage() {
+    if (!confirm(`Remove all snippets for "${selected}"?`)) return
+    updSnippets(s => {
+      const { [selected]: _, ...rest } = s
+      return rest
+    })
+    setSelected(Object.keys(snippets).find(k => k !== selected) || 'javascript')
+  }
+  function addSnippet() {
+    updSnippets(s => ({
+      ...s,
+      [selected]: [...(s[selected] || []), { prefix: '', body: '', description: '' }]
+    }))
+  }
+  function updateSnippet(i, patch) {
+    updSnippets(s => ({
+      ...s,
+      [selected]: (s[selected] || []).map((sn, idx) => idx === i ? { ...sn, ...patch } : sn)
+    }))
+  }
+  function removeSnippet(i) {
+    updSnippets(s => ({
+      ...s,
+      [selected]: (s[selected] || []).filter((_, idx) => idx !== i)
+    }))
+  }
+
+  return (
+    <div className="settings-subcard">
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        <select
+          className="settings-select"
+          value={selected}
+          onChange={e => setSelected(e.target.value)}
+          style={{ flex: 1 }}
+        >
+          {Object.keys(snippets).length === 0 && <option value={selected}>{selected} (no snippets yet)</option>}
+          {Object.keys(snippets).map(k => (
+            <option key={k} value={k}>{k} ({snippets[k]?.length || 0})</option>
+          ))}
+        </select>
+        <input
+          className="settings-input"
+          placeholder="add language (e.g. dart)"
+          value={newLang}
+          onChange={e => setNewLang(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') addLanguage() }}
+          style={{ width: 180 }}
+        />
+        <button className="btn-secondary" onClick={addLanguage}>+ Lang</button>
+        {snippets[selected] && (
+          <button className="btn-secondary" onClick={removeLanguage} title="Remove this language">−</button>
+        )}
+      </div>
+
+      {list.length === 0 && (
+        <div className="settings-desc" style={{ opacity: 0.5, padding: '8px 0' }}>
+          No snippets for <code>{selected}</code>. Click + Snippet to add one.
+        </div>
+      )}
+
+      {list.map((s, i) => (
+        <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10, padding: 8, background: 'rgba(255,255,255,0.03)', borderRadius: 6 }}>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              className="settings-input"
+              placeholder="prefix (e.g. fn)"
+              value={s.prefix}
+              onChange={e => updateSnippet(i, { prefix: e.target.value })}
+              style={{ flex: '0 0 120px' }}
+            />
+            <input
+              className="settings-input"
+              placeholder="description"
+              value={s.description || ''}
+              onChange={e => updateSnippet(i, { description: e.target.value })}
+              style={{ flex: 1 }}
+            />
+            <button className="btn-secondary" onClick={() => removeSnippet(i)} title="Delete">×</button>
+          </div>
+          <textarea
+            className="settings-input"
+            placeholder={"body (Monaco syntax: $1, ${1:default}, $0)"}
+            value={s.body}
+            onChange={e => updateSnippet(i, { body: e.target.value })}
+            rows={3}
+            style={{ fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: 12, resize: 'vertical' }}
+          />
+        </div>
+      ))}
+
+      <button className="btn-primary" onClick={addSnippet}>+ Snippet</button>
+    </div>
+  )
+}
+
 function CoderSection({ settings, set }) {
   const coder = settings.coder || {}
   function upd(patch) { set({ coder: { ...coder, ...patch } }) }
@@ -2012,6 +2213,17 @@ function CoderSection({ settings, set }) {
           <Toggle
             checked={coder.openInNewWindow !== false}
             onChange={v => upd({ openInNewWindow: v })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Restore last open project(s) on startup</div>
+            <div className="settings-desc">When NexTerm launches, automatically reopen the projects you had open last session as editor tabs. Each project keeps its own chat history.</div>
+          </div>
+          <Toggle
+            checked={coder.restoreLastProject === true}
+            onChange={v => upd({ restoreLastProject: v })}
           />
         </div>
 
@@ -2059,6 +2271,28 @@ function CoderSection({ settings, set }) {
           <Toggle
             checked={coder.confirmOnClose !== false}
             onChange={v => upd({ confirmOnClose: v })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Format on save</div>
+            <div className="settings-desc">Run Monaco's per-language formatter every time you save. JSON, JS/TS, HTML, CSS work out of the box.</div>
+          </div>
+          <Toggle
+            checked={coder.formatOnSave === true}
+            onChange={v => upd({ formatOnSave: v })}
+          />
+        </div>
+
+        <div className="settings-row">
+          <div>
+            <div className="settings-label">Trim trailing whitespace on save</div>
+            <div className="settings-desc">Strip extra spaces/tabs at the end of each line.</div>
+          </div>
+          <Toggle
+            checked={coder.trimTrailingWhitespace === true}
+            onChange={v => upd({ trimTrailingWhitespace: v })}
           />
         </div>
       </div>
@@ -2149,6 +2383,19 @@ function CoderSection({ settings, set }) {
         </div>
       </div>
 
+      <p className="section-title" style={{ marginTop: 18 }}>Command-line launcher</p>
+      <div className="settings-desc" style={{ marginBottom: 8 }}>
+        Install a small <code>nexterm</code> script on your PATH so you can run <code>nexterm .</code> or <code>nexterm path\to\project</code> from any shell to open a project in NexTerm.
+      </div>
+      <CliInstaller />
+
+      <p className="section-title" style={{ marginTop: 18 }}>Snippets</p>
+      <div className="settings-desc" style={{ marginBottom: 8 }}>
+        Custom code snippets that appear in the Monaco autocomplete. Use Monaco's snippet syntax for placeholders — <code>$1</code>, <code>${'{1:default}'}</code>, etc.
+        Language key is a Monaco language id (e.g. <code>javascript</code>, <code>python</code>, <code>dart</code>) or <code>*</code> for all languages.
+      </div>
+      <SnippetsEditor coder={coder} upd={upd} />
+
       <p className="section-title" style={{ marginTop: 18 }}>Bottom Terminal</p>
       <div className="settings-subcard">
         <div className="settings-row">
@@ -2164,6 +2411,147 @@ function CoderSection({ settings, set }) {
           />
         </div>
       </div>
+    </div>
+  )
+}
+
+function BundledModelsSection({ ai, upd }) {
+  const [models, setModels] = useState([])
+  const [recommend, setRecommend] = useState(null)
+  const [progress, setProgress] = useState({})   // { [id]: { pct, got, total } }
+  const [busy, setBusy] = useState({})           // { [id]: 'download' | 'load' | 'remove' }
+  const [error, setError] = useState(null)
+
+  function refresh() { window.nexterm.ai.bundledList().then(setModels) }
+
+  useEffect(() => {
+    refresh()
+    window.nexterm.ai.bundledRecommend().then(setRecommend)
+    const off = window.nexterm.ai.onBundledProgress?.((p) => {
+      setProgress(s => ({ ...s, [p.id]: p }))
+    })
+    return () => { off?.() }
+  }, [])
+
+  function fmt(mb) {
+    if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB'
+    return mb + ' MB'
+  }
+
+  async function download(id) {
+    setError(null); setBusy(b => ({ ...b, [id]: 'download' }))
+    const r = await window.nexterm.ai.bundledDownload(id)
+    setBusy(b => { const x = { ...b }; delete x[id]; return x })
+    setProgress(s => { const x = { ...s }; delete x[id]; return x })
+    if (r?.cancelled) { refresh(); return }
+    if (!r?.ok) setError(r?.error || 'Download failed')
+    refresh()
+  }
+  async function cancelDownload(id) {
+    await window.nexterm.ai.bundledCancel(id)
+    // The download promise will reject with 'cancelled' and the busy state
+    // clears in the download() handler above.
+  }
+  async function activate(id) {
+    setError(null); setBusy(b => ({ ...b, [id]: 'load' }))
+    const r = await window.nexterm.ai.bundledLoad(id)
+    setBusy(b => { const x = { ...b }; delete x[id]; return x })
+    if (!r?.ok) { setError(r?.error || 'Load failed'); return }
+    upd({ bundled: { ...(ai.bundled || {}), model: id } })
+    refresh()
+  }
+  async function remove(id) {
+    if (!confirm('Delete this model from disk?')) return
+    setError(null); setBusy(b => ({ ...b, [id]: 'remove' }))
+    const r = await window.nexterm.ai.bundledRemove(id)
+    setBusy(b => { const x = { ...b }; delete x[id]; return x })
+    if (!r?.ok) setError(r?.error || 'Remove failed')
+    if (ai.bundled?.model === id) upd({ bundled: { ...(ai.bundled || {}), model: null } })
+    refresh()
+  }
+
+  return (
+    <div className="settings-subcard">
+      <p className="section-title" style={{ marginTop: 0 }}>Bundled AI engine (node-llama-cpp)</p>
+      <div className="settings-desc" style={{ marginBottom: 10 }}>
+        Models run <strong>inside NexTerm</strong> — no Ollama daemon, no external dependency, no version-mismatch breakage. Pick a model that fits your hardware. NexTerm will download it once and use it forever.
+      </div>
+      {recommend && (
+        <div className="settings-desc" style={{ marginBottom: 10, opacity: 0.85 }}>
+          🖥 Detected: <strong>{recommend.ramGB} GB RAM</strong>, GPU: <em>{String(recommend.gpu).slice(0, 60)}</em>
+          {' · Recommended: '}<strong>{models.find(m => m.id === recommend.recommendedId)?.name || recommend.recommendedId}</strong>
+        </div>
+      )}
+      {error && <div className="settings-desc" style={{ color: '#ef4444' }}>⚠ {error}</div>}
+      {models.map(m => {
+        const isActive = ai.bundled?.model === m.id
+        const isRec    = recommend?.recommendedId === m.id
+        const p = progress[m.id]
+        const b = busy[m.id]
+        return (
+          <div key={m.id} style={{ padding: 10, marginBottom: 8, background: 'rgba(255,255,255,0.03)', borderRadius: 6, border: isActive ? '1px solid var(--accent)' : '1px solid transparent' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <strong style={{ flex: 1 }}>{m.name}</strong>
+              {isRec && <span className="settings-tag" style={{ background: 'rgba(34,197,94,0.18)', color: '#22c55e' }}>RECOMMENDED</span>}
+              {isActive && <span className="settings-tag" style={{ background: 'rgba(74,158,255,0.18)', color: 'var(--accent)' }}>ACTIVE</span>}
+              <span className="settings-desc" style={{ marginRight: 6 }}>{fmt(m.sizeMB)} · ≥ {m.minRamGB} GB RAM</span>
+              {!m.downloaded && !b && (
+                <button className="btn-primary" onClick={() => download(m.id)} disabled={!!b}>
+                  {progress[m.id]?.got > 0 ? 'Resume' : 'Download'}
+                </button>
+              )}
+              {b === 'download' && (
+                <>
+                  {p?.status === 'finalizing' ? (
+                    <span className="settings-desc">Finalizing…</span>
+                  ) : p ? (
+                    <span className="settings-desc">
+                      {(p.pct * 100).toFixed(0)}% · {(p.got / 1024 / 1024).toFixed(0)}/{(p.total / 1024 / 1024).toFixed(0)} MB
+                    </span>
+                  ) : (
+                    <span className="settings-desc">Starting…</span>
+                  )}
+                  {p?.status !== 'finalizing' && (
+                    <button className="btn-secondary" onClick={() => cancelDownload(m.id)}>Cancel</button>
+                  )}
+                </>
+              )}
+              {m.downloaded && !isActive && !b && (
+                <button className="btn-primary" onClick={() => activate(m.id)}>Activate</button>
+              )}
+              {m.downloaded && isActive && (
+                <button className="btn-secondary" disabled>In use</button>
+              )}
+              {m.downloaded && !b && (
+                <button className="btn-secondary" onClick={() => remove(m.id)} title="Delete model from disk">×</button>
+              )}
+              {b === 'load' && (
+                <span className="settings-desc">
+                  <span style={{ display: 'inline-block', width: 10, height: 10, border: '2px solid var(--accent)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'rec-blink 1s linear infinite', marginRight: 6, verticalAlign: 'middle' }} />
+                  Loading model into RAM…
+                </span>
+              )}
+              {b === 'remove' && <span className="settings-desc">deleting…</span>}
+            </div>
+            <div className="settings-desc" style={{ marginTop: 6 }}>{m.desc}</div>
+            {b === 'download' && p && (
+              <div style={{ marginTop: 6, height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+                <div
+                  style={{
+                    width: `${p.pct * 100}%`,
+                    height: '100%',
+                    background: p.status === 'finalizing'
+                      ? 'linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 50%, white))'
+                      : 'var(--accent)',
+                    transition: 'width 0.15s',
+                    animation: p.status === 'finalizing' ? 'rec-blink 1.2s ease-in-out infinite' : 'none'
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -2277,10 +2665,16 @@ function AiSection({ settings, set }) {
   async function testGeneration() {
     setBusy(true); setTestResult({ ok: true, msg: 'Generating a test response… (this proves the full inference pipeline works)' })
     try {
-      const mode    = ai.mode || 'cloud'
-      const provider2 = mode === 'local' ? 'ollama' : (ai.cloud?.provider || 'groq')
-      const model2  = mode === 'local' ? (ai.local?.model || 'qwen2.5-coder:7b')
-                                       : resolveCloudModel(provider2, ai.cloud?.model)
+      const mode    = ai.mode || 'bundled'
+      const provider2 = mode === 'bundled' ? 'bundled'
+                     : mode === 'local'    ? 'ollama'
+                                           : (ai.cloud?.provider || 'groq')
+      const model2  = mode === 'bundled' ? (ai.bundled?.model || '')
+                     : mode === 'local'  ? (ai.local?.model || 'qwen2.5-coder:7b')
+                                         : resolveCloudModel(provider2, ai.cloud?.model)
+      if (mode === 'bundled' && !model2) {
+        setTestResult({ ok: false, msg: 'No built-in model selected — pick one first.' }); setBusy(false); return
+      }
       let key = null
       if (mode === 'cloud') {
         key = await window.nexterm.vault.get(`ai.${provider2}.apiKey`)
@@ -2340,17 +2734,23 @@ function AiSection({ settings, set }) {
           <div className="settings-desc">Pick where AI runs. Cloud is fastest with free tiers; local is private but needs Ollama installed.</div>
         </div>
         <div className="cursor-opts">
-          {['cloud', 'local'].map(m => (
+          {[
+            { id: 'bundled', label: 'Bundled (built-in)' },
+            { id: 'cloud',   label: 'Cloud (free APIs)' },
+            { id: 'local',   label: 'Local (Ollama)' }
+          ].map(m => (
             <button
-              key={m}
-              className={`cursor-opt ${ai.mode === m ? 'active' : ''}`}
-              onClick={() => upd({ mode: m })}
+              key={m.id}
+              className={`cursor-opt ${ai.mode === m.id ? 'active' : ''}`}
+              onClick={() => upd({ mode: m.id })}
             >
-              {m === 'cloud' ? 'Cloud (free)' : 'Local (Ollama)'}
+              {m.label}
             </button>
           ))}
         </div>
       </div>
+
+      {ai.mode === 'bundled' && <BundledModelsSection ai={ai} upd={upd} />}
 
       {ai.mode === 'cloud' && (() => {
         const provInfo = CLOUD_PROVIDERS.find(p => p.id === (ai.cloud?.provider || 'groq')) || CLOUD_PROVIDERS[0]
@@ -2518,61 +2918,9 @@ function AiSection({ settings, set }) {
         </div>
       )}
 
-      <div style={{ marginTop: 12 }}>
-        <div className="settings-label">Ghost-text autocomplete <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 6, padding: '1px 6px', background: '#1e4', color: '#0a2', borderRadius: 8 }}>LOCAL ONLY</span></div>
-        <div className="settings-desc" style={{ marginBottom: 6 }}>
-          As you type, a small <strong>local</strong> AI model predicts the rest of the command. Press <kbd>Tab</kbd> to accept. <strong>Nothing leaves your machine and no API quota is used</strong> — runs entirely via Ollama on your computer. Requires Ollama installed + a small model pulled (we recommend <code>qwen2.5-coder:1.5b</code>, ~1 GB).
-        </div>
-        <div className="settings-subcard">
-          <div className="settings-row">
-            <div>
-              <div className="settings-label">Enable AI autocomplete</div>
-              <div className="settings-desc">Inline suggestions in the active terminal pane, like Warp. Local-only — never sends keystrokes anywhere.</div>
-            </div>
-            <Toggle
-              checked={(ai.autocomplete?.enabled) === true}
-              onChange={v => upd({ autocomplete: { ...(ai.autocomplete || {}), enabled: v } })}
-            />
-          </div>
-          <div className="settings-row">
-            <div>
-              <div className="settings-label">Model</div>
-              <div className="settings-desc">Use a small fast model. Coder variants of qwen, llama, or codellama all work. Pull more in the Local Models section above.</div>
-            </div>
-            <input
-              className="settings-input"
-              style={{ minWidth: 220 }}
-              value={ai.autocomplete?.model ?? 'qwen2.5-coder:1.5b'}
-              onChange={e => upd({ autocomplete: { ...(ai.autocomplete || {}), model: e.target.value } })}
-              placeholder="qwen2.5-coder:1.5b"
-            />
-          </div>
-          <div className="settings-row">
-            <div>
-              <div className="settings-label">Debounce</div>
-              <div className="settings-desc">Wait this long (ms) after the last keystroke before predicting. Lower = snappier but more CPU; higher = more relaxed.</div>
-            </div>
-            <input
-              type="number" min={100} max={2000} step={50}
-              className="settings-input" style={{ width: 90 }}
-              value={ai.autocomplete?.debounceMs ?? 400}
-              onChange={e => upd({ autocomplete: { ...(ai.autocomplete || {}), debounceMs: Math.max(100, Math.min(2000, Number(e.target.value) || 400)) } })}
-            />
-          </div>
-          <div className="settings-row">
-            <div>
-              <div className="settings-label">Minimum characters</div>
-              <div className="settings-desc">Only suggest after you've typed at least this many characters.</div>
-            </div>
-            <input
-              type="number" min={1} max={20} step={1}
-              className="settings-input" style={{ width: 90 }}
-              value={ai.autocomplete?.minChars ?? 3}
-              onChange={e => upd({ autocomplete: { ...(ai.autocomplete || {}), minChars: Math.max(1, Math.min(20, Number(e.target.value) || 3)) } })}
-            />
-          </div>
-        </div>
-      </div>
+      {/* AI-based autocomplete was removed in favor of a static popular-
+          commands list (no model needed, zero RAM, no quota). The list is
+          edited from Settings → Terminal → Command Suggestions. */}
 
       <div style={{ marginTop: 12 }}>
         <div className="settings-label">Privacy</div>

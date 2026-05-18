@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, Menu, dialog, safeStorage, nativeTheme, nativeImage, globalShortcut, screen, Notification } from 'electron'
+import { app, BrowserWindow, Tray, ipcMain, shell, Menu, dialog, safeStorage, nativeTheme, nativeImage, globalShortcut, screen, Notification } from 'electron'
 import { join } from 'path'
 import { spawn } from 'node-pty'
 import Database from 'better-sqlite3'
@@ -12,6 +12,7 @@ import * as ai from './ai/index.js'
 import { extractPdfText } from './ai/pdf-extract.js'
 import { registerProjectIpc } from './project.js'
 import { registerWindow, broadcast as broadcastToWindows, registerWindowIpc } from './windows.js'
+import { registerGitIpc } from './git-coder.js'
 
 // Pin the app name BEFORE any app.getPath() call so userData stays in
 // %APPDATA%\nexterm regardless of how the binary is launched (npm run dev,
@@ -29,10 +30,57 @@ const ptys = new Map()
 const inputBuffers = new Map()
 const cwds = new Map()           // pty id → current working directory
 const recordings = new Map()     // pane id → { fd: WritableStream, startTs }
+const sshPtyIds = new Set()      // ids of ptys whose shell is ssh.exe — for status bar
 
-// Per-pane debounced AI autocomplete state.
-const aiAutoTimers      = new Map()  // pty id → setTimeout handle
-const aiAutoInFlightBuf = new Map()  // pty id → buf the in-flight request was for
+// System tray (created on demand when "Run in Background" is enabled)
+let appTray = null
+let trayTabs = []                // last list of tabs the renderer pushed for tray menu
+
+function buildTrayMenu() {
+  const items = []
+  items.push({ label: 'Show NexTerm', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } } })
+  if (trayTabs.length > 0) {
+    items.push({ type: 'separator' })
+    items.push({ label: 'Recent tabs', enabled: false })
+    for (const t of trayTabs.slice(0, 10)) {
+      items.push({
+        label: t.name,
+        click: () => {
+          if (mainWindow) { mainWindow.show(); mainWindow.focus() }
+          mainWindow?.webContents.send('tray:focusTab', t.id)
+        }
+      })
+    }
+  }
+  items.push({ type: 'separator' })
+  items.push({ label: 'New terminal tab', click: () => {
+    if (mainWindow) { mainWindow.show(); mainWindow.focus() }
+    mainWindow?.webContents.send('tray:newTab')
+  } })
+  items.push({ type: 'separator' })
+  items.push({ label: 'Quit NexTerm', click: () => { global.__forceQuit = true; app.quit() } })
+  return Menu.buildFromTemplate(items)
+}
+function ensureTray() {
+  if (appTray) return
+  try {
+    const iconPath = join(__dirname, '../../build/icon.png')
+    appTray = new Tray(nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 }))
+    appTray.setToolTip('NexTerm')
+    appTray.setContextMenu(buildTrayMenu())
+    appTray.on('click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus() } })
+  } catch (e) {
+    console.error('[tray] init failed', e)
+    appTray = null
+  }
+}
+function destroyTray() {
+  try { appTray?.destroy() } catch {}
+  appTray = null
+}
+
+// (Removed) AI-driven ghost-text autocomplete. We now use a static
+// popular-commands list + history. See `suggestStatic()` below.
 
 // Smart cd: per-path { count, last_used } persisted to cd_freq.json
 let cdFreq = null         // Map(path → {count, last})
@@ -137,6 +185,13 @@ process.on('unhandledRejection', (e) => {
 // ─── Settings ────────────────────────────────────────────────────────────────
 
 const DEFAULT_SETTINGS = {
+  // Extensions registry (Extensions panel fetches this). Mirrors the
+  // renderer-store default so loadSettings() doesn't strip it when the
+  // user's saved settings.json predates the extensions feature.
+  extensionsRegistryUrl: 'https://cdn.jsdelivr.net/gh/rajendra7169/nexterm-extensions@main/registry.json',
+  installedExtensions: [],
+  extensionConfig: {},
+
   theme: 'tokyonight',
   fontSize: 14,
   fontFamily: 'Cascadia Code, Consolas, monospace',
@@ -252,12 +307,13 @@ function initDB() {
     );
 
     CREATE TABLE IF NOT EXISTS ai_conversations (
-      id          TEXT    PRIMARY KEY,
-      title       TEXT    NOT NULL,
-      provider    TEXT    NOT NULL,
-      model       TEXT    NOT NULL,
-      created_at  INTEGER NOT NULL,
-      updated_at  INTEGER NOT NULL
+      id           TEXT    PRIMARY KEY,
+      title        TEXT    NOT NULL,
+      provider     TEXT    NOT NULL,
+      model        TEXT    NOT NULL,
+      project_path TEXT,                          -- null = terminal-only conversation
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_ai_conv_updated ON ai_conversations(updated_at DESC);
@@ -280,10 +336,14 @@ function initDB() {
   for (const sql of [
     'ALTER TABLE profiles ADD COLUMN tunnels TEXT',
     'ALTER TABLE profiles ADD COLUMN jump_hosts TEXT',
-    'ALTER TABLE profiles ADD COLUMN auto_reconnect INTEGER DEFAULT 0'
+    'ALTER TABLE profiles ADD COLUMN auto_reconnect INTEGER DEFAULT 0',
+    'ALTER TABLE ai_conversations ADD COLUMN project_path TEXT'
   ]) {
     try { db.exec(sql) } catch {}
   }
+  // Indexes that reference migrated columns — run AFTER the ALTER TABLEs above
+  // so they don't fail on a pre-existing DB that doesn't have the column yet.
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_ai_conv_project ON ai_conversations(project_path)') } catch {}
 }
 
 function saveCommand(sessionId, command, directory) {
@@ -336,86 +396,59 @@ function readVaultKey(name) {
   } catch { return null }
 }
 
-// Schedule an AI-powered autocomplete request for this pane's current input.
-// Debounced — cancels any prior pending timer. The history-based suggestion
-// has already fired immediately; the AI result, when it arrives, only
-// overrides if a sensible suffix comes back AND the user hasn't typed more.
-function scheduleAiAutocomplete(id, buf, settings) {
-  if (aiAutoTimers.has(id)) {
-    clearTimeout(aiAutoTimers.get(id))
-    aiAutoTimers.delete(id)
+// Static popular-commands list for autocomplete. Curated PowerShell/Windows
+// commands that users almost certainly want when typing the prefix. The user
+// can extend this via Settings → Coder (or wherever — settings.popularCommands).
+const POPULAR_COMMANDS = [
+  // Git
+  'git status', 'git pull', 'git push', 'git fetch', 'git add .', 'git add -A',
+  'git commit -m ""', 'git commit --amend', 'git log --oneline', 'git diff',
+  'git branch', 'git checkout main', 'git checkout -b ',
+  'git stash', 'git stash pop', 'git reset --hard HEAD', 'git clone ',
+  // npm / node
+  'npm install', 'npm install --save ', 'npm install --save-dev ',
+  'npm run dev', 'npm run build', 'npm run test', 'npm run start',
+  'npm audit fix', 'npm outdated', 'npm ci',
+  'npx ', 'node ', 'pnpm install', 'pnpm run dev', 'yarn install', 'yarn dev',
+  // Docker
+  'docker ps', 'docker ps -a', 'docker images', 'docker build -t ',
+  'docker run -it --rm ', 'docker compose up', 'docker compose up -d',
+  'docker compose down', 'docker logs -f ', 'docker exec -it ',
+  // PowerShell common
+  'Get-ChildItem', 'Get-Process', 'Get-Service', 'Get-Content ',
+  'Set-Location ', 'Set-Content ', 'Get-Help ', 'Where-Object ',
+  'Select-Object ', 'Sort-Object ', 'ForEach-Object ',
+  'Test-Path ', 'New-Item -ItemType Directory ', 'Remove-Item ',
+  // Network / system
+  'ipconfig', 'ping ', 'tracert ', 'netstat -ano', 'curl ', 'wget ',
+  'taskkill /F /IM ', 'systeminfo',
+  // Files
+  'ls', 'ls -la', 'cd ', 'mkdir ', 'rm ', 'cp ', 'mv ', 'cat ', 'less ',
+  'find . -name ', 'grep -r ', 'tail -f ',
+  // Python
+  'python -m venv .venv', '.venv\\Scripts\\activate', 'pip install -r requirements.txt',
+  'pip install ', 'python ',
+  // Misc
+  'code .', 'nexterm .', 'clear', 'cls', 'history'
+]
+
+// Look up the best static-command suggestion for a partial input.
+// Returns the FIRST popular command that starts with the user's input
+// (case-insensitive), or '' if none. User-added entries come first.
+function suggestStatic(buf, settings) {
+  if (!buf || buf.length < 2) return ''
+  const lower = buf.toLowerCase()
+  const userCmds = (settings.popularCommands || [])
+  for (const c of userCmds) {
+    if (typeof c === 'string' && c.toLowerCase().startsWith(lower) && c.length > buf.length) return c
   }
-  const ac = settings.ai?.autocomplete
-  if (!settings.ai?.enabled) return
-  if (!ac?.enabled) return
-  if (!buf || buf.length < (ac.minChars || 3)) return
-  // Skip if the input ends with a space — the user likely paused mid-thought
-  // and AI completion of "git " → "git status" is rarely what they want.
-  if (buf.endsWith(' ')) return
-
-  const timer = setTimeout(async () => {
-    aiAutoTimers.delete(id)
-    // If user typed more or cleared the buffer since this was scheduled, skip.
-    if (inputBuffers.get(id) !== buf) return
-    // Avoid stacking duplicates if a prior request is still flying for the same buf.
-    if (aiAutoInFlightBuf.get(id) === buf) return
-    aiAutoInFlightBuf.set(id, buf)
-
-    try {
-      // Autocomplete is LOCAL-ONLY by design — every keystroke pause would
-      // otherwise burn cloud API quota. Local Ollama is free, private, fast.
-      const provider = 'ollama'
-      const model    = ac.model || settings.ai.local?.model || 'qwen2.5-coder:1.5b'
-      const apiKey   = null
-      // If Ollama daemon isn't up, silently bail — autocomplete must never
-      // get in the user's way. Settings UI surfaces the install button.
-      try {
-        const running = await ai.isOllamaRunning()
-        if (!running) return
-      } catch { return }
-
-      const cwd = cwds.get(id) || ''
-      let recentCmds = []
-      try {
-        recentCmds = db.prepare(
-          'SELECT command FROM history WHERE command != ? ORDER BY timestamp DESC LIMIT 5'
-        ).all(buf).map(r => r.command)
-      } catch {}
-
-      const promptText =
-        (cwd ? `Current directory: ${cwd}\n` : '') +
-        (recentCmds.length ? `Recent commands (most recent first):\n${recentCmds.join('\n')}\n` : '') +
-        `\nPartial command (complete it):\n${buf}`
-
-      const text = await ai.complete({
-        provider, model, apiKey,
-        system: ai.SYSTEM_PROMPTS.autocomplete,
-        prompt: promptText
-      })
-
-      // The user may have typed more (or cleared) while we were waiting.
-      if (inputBuffers.get(id) !== buf) return
-
-      let suffix = (text || '').trim().split('\n')[0]
-      if (!suffix || suffix === '?') return
-      // Strip a leading echo of the prefix if the model returned it.
-      if (suffix.toLowerCase().startsWith(buf.toLowerCase())) {
-        suffix = suffix.slice(buf.length)
-      }
-      // Trim trailing punctuation that PowerShell would never want at end-of-line.
-      suffix = suffix.replace(/[`"']+$/, '')
-      if (!suffix) return
-
-      safeSend(`suggest:${id}`, { input: buf, suggestion: buf + suffix })
-    } catch {
-      // Silent failure — autocomplete must never get in the user's way.
-    } finally {
-      if (aiAutoInFlightBuf.get(id) === buf) aiAutoInFlightBuf.delete(id)
-    }
-  }, ac.debounceMs || 500)
-
-  aiAutoTimers.set(id, timer)
+  for (const c of POPULAR_COMMANDS) {
+    if (c.toLowerCase().startsWith(lower) && c.length > buf.length) return c
+  }
+  return ''
 }
+
+export function getPopularCommands() { return POPULAR_COMMANDS.slice() }
 
 // ─── PTY ──────────────────────────────────────────────────────────────────────
 
@@ -792,6 +825,7 @@ Remove-Item -LiteralPath '${sip}' -Force -EA SilentlyContinue
 
   ptys.set(id, pty)
   inputBuffers.set(id, '')
+  if (/\\ssh\.exe$|\/ssh$/i.test(String(sh))) sshPtyIds.add(id)
   console.log(`[PTY] spawned pid=${pty.pid} shell=${sh} actualArgs[0..2]=${JSON.stringify(actualArgs.slice(0,3))}`)
 
   pty.onData(data => {
@@ -1228,17 +1262,16 @@ function setupIPC() {
 
       inputBuffers.set(id, buf)
 
-      if (inputChanged) {
-        // Step 1: history-based suggestion fires instantly (free, no API call)
-        if (settings.suggestions) {
-          try {
-            const suggestion = suggestFor(buf)
-            safeSend(`suggest:${id}`, { input: buf, suggestion })
-          } catch {}
-        }
-        // Step 2: AI ghost-text autocomplete fires after debounce.
-        // If it produces a longer/better completion, it overrides the history one.
-        try { scheduleAiAutocomplete(id, buf, settings) } catch (e) { console.error('[aiAutocomplete]', e?.message) }
+      if (inputChanged && settings.suggestions !== false) {
+        // History first (most recent commands the user has actually run).
+        // If history has nothing, fall back to the curated popular-commands
+        // list + the user's own additions. No AI is used here.
+        try {
+          let suggestion = ''
+          try { suggestion = suggestFor(buf) } catch {}
+          if (!suggestion) suggestion = suggestStatic(buf, settings)
+          safeSend(`suggest:${id}`, { input: buf, suggestion })
+        } catch {}
       }
     } catch (e) {
       console.error('[pty:write outer]', e?.message)
@@ -1254,8 +1287,7 @@ function setupIPC() {
     ptys.delete(id)
     inputBuffers.delete(id)
     cwds.delete(id)
-    if (aiAutoTimers.has(id)) { clearTimeout(aiAutoTimers.get(id)); aiAutoTimers.delete(id) }
-    aiAutoInFlightBuf.delete(id)
+    sshPtyIds.delete(id)
   })
 
   // History — supports scope ('all' | 'cwd' | 'tree') with per-session cwd
@@ -1361,8 +1393,9 @@ function setupIPC() {
   ipcMain.handle('settings:reveal',  () => shell.showItemInFolder(SETTINGS_PATH))
   ipcMain.handle('settings:openEditor', () => shell.openPath(SETTINGS_PATH))
 
-  ipcMain.handle('settings:export', async () => {
-    const r = await dialog.showSaveDialog(mainWindow, {
+  ipcMain.handle('settings:export', async (event) => {
+    const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow
+    const r = await dialog.showSaveDialog(parent, {
       title: 'Export NexTerm settings',
       defaultPath: `nexterm-settings-${new Date().toISOString().slice(0,10)}.json`,
       filters: [{ name: 'JSON', extensions: ['json'] }]
@@ -1372,8 +1405,9 @@ function setupIPC() {
     return { ok: true, path: r.filePath }
   })
 
-  ipcMain.handle('settings:import', async () => {
-    const r = await dialog.showOpenDialog(mainWindow, {
+  ipcMain.handle('settings:import', async (event) => {
+    const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow
+    const r = await dialog.showOpenDialog(parent, {
       title: 'Import NexTerm settings',
       filters: [{ name: 'JSON', extensions: ['json'] }],
       properties: ['openFile']
@@ -1412,6 +1446,20 @@ function setupIPC() {
           const stat = require('fs').statSync(a)
           if (stat.isDirectory()) return a
         }
+      }
+    } catch {}
+    return null
+  })
+
+  // When launched via the `nexterm` CLI (which passes --editor <path>), open
+  // that folder as a Coder tab instead of just setting the terminal cwd.
+  ipcMain.handle('app:initialProject', () => {
+    try {
+      const args = process.argv.slice(1)
+      const idx = args.indexOf('--editor')
+      if (idx >= 0 && args[idx + 1]) {
+        const p = args[idx + 1]
+        if (existsSync(p) && require('fs').statSync(p).isDirectory()) return p
       }
     } catch {}
     return null
@@ -1734,6 +1782,7 @@ function setupIPC() {
 
   // ─── Project / Coder mode ───────────────────────────────────────────────
   registerProjectIpc({ mainWindow })
+  registerGitIpc()
 
   // ─── Multi-window ───────────────────────────────────────────────────────
   registerWindowIpc({
@@ -1761,6 +1810,9 @@ function setupIPC() {
   ipcMain.handle('ai:detectOllama',     () => ai.detectOllama())
   ipcMain.handle('ai:isOllamaRunning',  () => ai.isOllamaRunning())
   ipcMain.handle('ai:listLocalModels',  () => ai.listLocalModels())
+  // Claude Code CLI detection + login (subscription auth path).
+  ipcMain.handle('ai:detectClaudeCli', () => ai.anthropicCli.detectClaudeCli())
+  ipcMain.handle('ai:claudeLogin',     () => ai.anthropicCli.startLoginFlow())
   ipcMain.handle('ai:complete', async (_, opts) => {
     try {
       const text = await ai.complete(opts || {})
@@ -1781,8 +1833,8 @@ function setupIPC() {
 
   // Order of providers tried after the primary fails over. Vision attachments
   // restrict this to vision-capable providers.
-  const CLOUD_CHAIN = ['groq', 'gemini', 'cerebras', 'openrouter']
-  const VISION_PROVIDERS = new Set(['groq', 'gemini', 'openrouter'])
+  const CLOUD_CHAIN = ['anthropic', 'groq', 'gemini', 'cerebras', 'openrouter']
+  const VISION_PROVIDERS = new Set(['anthropic', 'groq', 'gemini', 'openrouter'])
 
   function readVaultKey(name) {
     try {
@@ -1827,9 +1879,28 @@ function setupIPC() {
     // Build the candidate list: primary first, then chain (skipping primary
     // and any provider without a vault key). For image requests, only keep
     // vision-capable providers.
-    const candidates = [primary, ...CLOUD_CHAIN.filter(p => p !== primary)]
-      .filter(p => p === 'ollama' || readVaultKey(`ai.${p}.apiKey`))
-      .filter(p => !hasImages || VISION_PROVIDERS.has(p))
+    //
+    // Local providers ('bundled', 'ollama') don't need API keys, so they
+    // pass the filter automatically. The cloud failover chain still applies
+    // only when the primary IS cloud — if the user explicitly picked a
+    // local backend, we don't silently fall through to cloud.
+    const LOCAL_PROVIDERS = new Set(['bundled', 'ollama'])
+    // Anthropic in CLI mode authenticates via the Claude Code subprocess
+    // (Pro-subscription), no API key in vault — exempt it from the key check.
+    const cliAuth = opts?.authMode === 'cli' && primary === 'anthropic'
+    let candidates
+    if (LOCAL_PROVIDERS.has(primary)) {
+      // Local-only: don't include cloud fallbacks. Respect the user's choice.
+      candidates = [primary]
+    } else if (cliAuth) {
+      // CLI mode: don't fall over to other clouds — the user explicitly
+      // wants Claude via their Pro subscription.
+      candidates = [primary]
+    } else {
+      candidates = [primary, ...CLOUD_CHAIN.filter(p => p !== primary)]
+        .filter(p => readVaultKey(`ai.${p}.apiKey`))
+        .filter(p => !hasImages || VISION_PROVIDERS.has(p))
+    }
 
     ;(async () => {
       let chunkCount = 0
@@ -1841,7 +1912,7 @@ function setupIPC() {
         const candModel = cand === primary
           ? opts?.model
           : (hasImages ? VISION_DEFAULTS[cand] : PROVIDER_DEFAULTS[cand])
-        const candKey = cand === 'ollama' ? null : readVaultKey(`ai.${cand}.apiKey`)
+        const candKey = LOCAL_PROVIDERS.has(cand) ? null : readVaultKey(`ai.${cand}.apiKey`)
         const candOpts = { ...(opts || {}), provider: cand, model: candModel, apiKey: candKey, signal: controller.signal }
 
         if (i > 0) {
@@ -1855,9 +1926,25 @@ function setupIPC() {
         try {
           for await (const chunk of ai.streamComplete(candOpts)) {
             if (controller.signal.aborted) break
-            if (chunk) {
-              chunkCount++
+            if (!chunk) continue
+            chunkCount++
+            // Richer providers (Claude CLI) yield event objects with
+            // tool_call / tool_result / text shapes. Plain string chunks
+            // come from the simpler providers.
+            if (typeof chunk === 'string') {
               safeSend('ai:stream:event', { streamId, type: 'chunk', text: chunk })
+            } else if (chunk.type === 'text') {
+              safeSend('ai:stream:event', { streamId, type: 'chunk', text: chunk.text })
+            } else if (chunk.type === 'tool_call') {
+              safeSend('ai:stream:event', {
+                streamId, type: 'tool_call',
+                tool: chunk.tool, input: chunk.input, id: chunk.id
+              })
+            } else if (chunk.type === 'tool_result') {
+              safeSend('ai:stream:event', {
+                streamId, type: 'tool_result',
+                toolUseId: chunk.toolUseId, text: chunk.text, isError: chunk.isError
+              })
             }
           }
           // Stream finished cleanly — done.
@@ -1902,15 +1989,24 @@ function setupIPC() {
   ipcMain.handle('ai:systemPrompts', () => ai.SYSTEM_PROMPTS)
 
   // ── AI conversation history (SQLite-backed, persists across restarts) ──
-  ipcMain.handle('ai:conv:list', () =>
-    db.prepare('SELECT id, title, provider, model, created_at, updated_at FROM ai_conversations ORDER BY updated_at DESC LIMIT 200').all()
-  )
-  ipcMain.handle('ai:conv:create', (_, { title, provider, model } = {}) => {
+  // When `projectPath` is provided, returns only conversations tied to that
+  // project. When omitted (or null), returns terminal-only conversations
+  // (project_path IS NULL).
+  ipcMain.handle('ai:conv:list', (_, opts = {}) => {
+    if (opts && opts.projectPath) {
+      return db.prepare('SELECT id, title, provider, model, project_path, created_at, updated_at FROM ai_conversations WHERE project_path = ? ORDER BY updated_at DESC LIMIT 200').all(opts.projectPath)
+    }
+    if (opts && opts.terminalOnly) {
+      return db.prepare('SELECT id, title, provider, model, project_path, created_at, updated_at FROM ai_conversations WHERE project_path IS NULL ORDER BY updated_at DESC LIMIT 200').all()
+    }
+    return db.prepare('SELECT id, title, provider, model, project_path, created_at, updated_at FROM ai_conversations ORDER BY updated_at DESC LIMIT 200').all()
+  })
+  ipcMain.handle('ai:conv:create', (_, { title, provider, model, projectPath } = {}) => {
     const id = `c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const now = Date.now()
-    db.prepare(`INSERT INTO ai_conversations (id, title, provider, model, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(id, title || 'New chat', provider || 'groq', model || 'llama-3.3-70b-versatile', now, now)
+    db.prepare(`INSERT INTO ai_conversations (id, title, provider, model, project_path, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, title || 'New chat', provider || 'groq', model || 'llama-3.3-70b-versatile', projectPath || null, now, now)
     return db.prepare('SELECT * FROM ai_conversations WHERE id = ?').get(id)
   })
   ipcMain.handle('ai:conv:rename', (_, { id, title } = {}) => {
@@ -1934,8 +2030,11 @@ function setupIPC() {
     return { id: res.lastInsertRowid, created_at: now }
   })
   // Attach a file from disk — returns metadata + text snippet (first 50 KB for text/PDF).
-  ipcMain.handle('ai:file:pick', async () => {
-    const r = await dialog.showOpenDialog(mainWindow, {
+  ipcMain.handle('ai:file:pick', async (event) => {
+    // Parent the dialog to the calling window so it doesn't steal focus to
+    // the main window when invoked from a child window.
+    const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow
+    const r = await dialog.showOpenDialog(parent, {
       title: 'Attach to AI chat',
       properties: ['openFile'],
       filters: [
@@ -2027,6 +2126,78 @@ function setupIPC() {
     try { return { ok: await ai.deleteModel(name) } } catch (e) { return { ok: false, error: String(e?.message || e) } }
   })
 
+  // ── Bundled in-process AI engine (node-llama-cpp) ─────────────────────
+  ipcMain.handle('aiBundled:list',        () => ai.bundled.listAvailableModels())
+  ipcMain.handle('aiBundled:recommend',   async () => ai.bundled.detectRecommendedModel())
+  ipcMain.handle('aiBundled:loaded',      () => ({ loaded: ai.bundled.getLoadedModel() }))
+  ipcMain.handle('aiBundled:remove',      (_, id) => ai.bundled.removeModel(id))
+  ipcMain.handle('aiBundled:load', async (_, id) => {
+    try { return await ai.bundled.loadModel(id) }
+    catch (e) { return { ok: false, error: String(e?.message || e) } }
+  })
+  ipcMain.handle('aiBundled:unload', () => { ai.bundled.unloadModel(); return { ok: true } })
+  ipcMain.handle('aiBundled:download', async (_, id) => {
+    try {
+      await ai.bundled.downloadModel(id, (p) => {
+        safeSend('aiBundled:progress', { id, ...p })
+      })
+      return { ok: true }
+    } catch (e) {
+      const msg = String(e?.message || e)
+      return { ok: msg === 'cancelled', cancelled: msg === 'cancelled', error: msg === 'cancelled' ? null : msg }
+    }
+  })
+  ipcMain.handle('aiBundled:cancel', (_, id) => ai.bundled.cancelDownload(id))
+  ipcMain.handle('aiBundled:partial', (_, id) => ({ partialSize: ai.bundled.getPartialSize(id) }))
+
+  // Enforce mode exclusivity: switching backend frees the other's RAM
+  // immediately. Called from the renderer whenever ai.mode or ai.enabled
+  // changes.
+  //   mode = 'bundled' → kill Ollama daemon
+  //   mode = 'local'   → unload bundled model
+  //   mode = 'cloud'   → unload bundled model + kill Ollama daemon
+  //   enabled = false  → free everything
+  ipcMain.handle('ai:applyMode', async (_, { mode, enabled }) => {
+    try {
+      if (enabled === false) {
+        ai.bundled.unloadModel()
+        try { await ai.stopOllama() } catch {}
+        return { ok: true, freed: ['bundled', 'ollama'] }
+      }
+      if (mode === 'bundled') {
+        // Free Ollama's RAM — built-in is in charge now.
+        try { await ai.stopOllama() } catch {}
+        return { ok: true, freed: ['ollama'] }
+      }
+      if (mode === 'local') {
+        // Free built-in RAM and AUTO-START the Ollama daemon so the user
+        // doesn't have to do it manually.
+        ai.bundled.unloadModel()
+        let started = null
+        try {
+          const info = await ai.detectOllama()
+          if (info?.installed) {
+            started = await ai.startOllama({ timeoutMs: 12_000 })
+          } else {
+            started = { ok: false, notInstalled: true }
+          }
+        } catch (e) {
+          started = { ok: false, error: String(e?.message || e) }
+        }
+        return { ok: true, freed: ['bundled'], ollamaStart: started }
+      }
+      if (mode === 'cloud') {
+        // Cloud → free both local engines.
+        ai.bundled.unloadModel()
+        try { await ai.stopOllama() } catch {}
+        return { ok: true, freed: ['bundled', 'ollama'] }
+      }
+      return { ok: true, freed: [] }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
+  })
+
   // ─── Live system load (for the bottom status bar bars) ────────────────────
   // Renderer polls this every ~2s. Reads CPU from a 200ms sample, GPU from
   // nvidia-smi (when available), RAM from os.* (instant).
@@ -2036,6 +2207,31 @@ function setupIPC() {
     // Use the same samplers as the banner widget cache so we don't duplicate.
     const [cpuPct, gpuPct] = await Promise.all([sampleCpuPct(120), sampleGpuPct()])
     return { cpu: cpuPct, gpu: gpuPct, ram: ramPct }
+  })
+
+  // Live counts shown in the status bar: SSH sessions and active recordings.
+  // ── System tray ─────────────────────────────────────────────────
+  // Renderer pushes its current tab list whenever it changes.
+  ipcMain.on('tray:setTabs', (_, tabs) => {
+    trayTabs = Array.isArray(tabs) ? tabs : []
+    if (appTray) appTray.setContextMenu(buildTrayMenu())
+  })
+  // Renderer asks us to create/destroy tray when "Run in Background" toggles.
+  ipcMain.handle('tray:setEnabled', (_, on) => {
+    if (on) ensureTray()
+    else destroyTray()
+    return { ok: true }
+  })
+
+  ipcMain.handle('system:liveCounts', async () => {
+    // Count SSH-driven ptys by checking the shell path. node-pty doesn't keep
+    // the original shell on the pty object so we tag ptys at spawn time
+    // (see `sshPtyIds` Set below).
+    return {
+      sshSessions:    sshPtyIds.size,
+      recordings:     recordings.size,
+      activeStreams:  activeStreams?.size || 0
+    }
   })
 
   // ─── Link preview (HEAD/GET <title>) for hover cards ─────────────────────
@@ -2652,6 +2848,14 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+  // Start the system tray if the user has Run-in-Background turned on
+  try {
+    const s = loadSettings()
+    if (s.runInBackground === true && typeof ensureTray === 'function') {
+      // setupIPC defines ensureTray — call after window is up
+      setTimeout(() => { try { ensureTray?.() } catch {} }, 500)
+    }
+  } catch {}
   // Kick off widget cache refresh in background. First refresh is fire-and-forget
   // so the first banner shows widgets after a few seconds rather than blocking startup.
   refreshWidgetCache().catch(() => {})

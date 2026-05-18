@@ -53,6 +53,14 @@ const TAB_COLORS = [
   { name: 'Pink',   value: '#ec4899' }
 ]
 
+// Short display path for a recent-project entry: "…/parent/name"
+function shortenRecentPath(p) {
+  if (!p) return ''
+  const parts = p.split(/[\\/]/).filter(Boolean)
+  if (parts.length <= 2) return p.replace(/\\/g, '/')
+  return '…/' + parts.slice(-2, -1).join('/')
+}
+
 export default function TabBar() {
   const { tabs, activeId, settings, addTab, removeTab, setActive, renameTab,
           reorderTab, togglePin, setTabColor, toggleBroadcast } = useStore()
@@ -144,6 +152,27 @@ export default function TabBar() {
     if (fromId && fromId !== tab.id) reorderTab(fromId, tab.id)
     setDragOverId(null)
   }
+  // Drag a tab outside the window → detach it into a brand-new NexTerm window.
+  // Editor tabs are fully transferable (the project path is all the new window
+  // needs to recreate the tab). Terminal tabs can't really migrate their live
+  // PTY display, so we just open a blank window and surface a note.
+  function onDragEnd(tab, e) {
+    // Only treat as "outside drop" when the browser couldn't find a target.
+    if (e.dataTransfer.dropEffect !== 'none') return
+    const x = e.screenX, y = e.screenY
+    const wx = window.screenX, wy = window.screenY
+    const ww = window.outerWidth, wh = window.outerHeight
+    const outside = x < wx - 20 || x > wx + ww + 20 || y < wy - 20 || y > wy + wh + 20
+    if (!outside) return
+    if (tab.type === 'editor') {
+      window.nexterm.window?.openWith?.({ kind: 'editor', projectPath: tab.projectPath })
+        .then(r => { if (r?.ok) removeTab(tab.id) })
+    } else {
+      // For terminal tabs, just open a fresh blank window — the live PTY stays
+      // with this window.
+      window.nexterm.window?.openWith?.({ kind: 'blank' })
+    }
+  }
 
   return (
     <div className="tabbar">
@@ -160,6 +189,7 @@ export default function TabBar() {
           onDragOver={e => onDragOver(tab, e)}
           onDrop={e => onDrop(tab, e)}
           onDragLeave={() => setDragOverId(null)}
+          onDragEnd={e => onDragEnd(tab, e)}
           title={tab.name + (tab.pinned ? ' (pinned)' : '')}
         >
           {editing === tab.id ? (
@@ -256,24 +286,58 @@ export default function TabBar() {
             </div>
           ))}
           <div className="shell-menu-header" style={{ marginTop: 4 }}>Coder mode</div>
-          <div className="shell-menu-item" onClick={async () => {
-            const dir = await window.nexterm.project.pickFolder()
-            if (!dir) { setShowMenu(false); return }
-            const liveSettings = useStore.getState().settings
-            const newWin = liveSettings.coder?.openInNewWindow !== false
-            console.log('[TabBar] open project', { dir, newWin })
-            if (newWin) {
-              const r = await window.nexterm.window.openWith({ kind: 'editor', projectPath: dir })
-              console.log('[TabBar] openWith result', r)
-              if (!r?.ok) useStore.getState().addEditorTab(dir)
-            } else {
-              useStore.getState().addEditorTab(dir)
+          {(() => {
+            async function openProject(dir) {
+              if (!dir) { setShowMenu(false); return }
+              const liveSettings = useStore.getState().settings
+              const newWin = liveSettings.coder?.openInNewWindow !== false
+              if (newWin) {
+                const r = await window.nexterm.window.openWith({ kind: 'editor', projectPath: dir })
+                if (!r?.ok) useStore.getState().addEditorTab(dir)
+              } else {
+                useStore.getState().addEditorTab(dir)
+              }
+              setShowMenu(false)
             }
-            setShowMenu(false)
-          }}>
-            <span className="shell-tag">📁</span>
-            <span>Open Project…</span>
-          </div>
+            const recent = (useStore.getState().settings.recentProjects || []).slice(0, 6)
+            return (
+              <>
+                <div className="shell-menu-item" onClick={async () => {
+                  const dir = await window.nexterm.project.pickFolder()
+                  openProject(dir)
+                }}>
+                  <span className="shell-tag">📁</span>
+                  <span>Open Project…</span>
+                </div>
+                {recent.length > 0 && (
+                  <>
+                    <div className="shell-menu-subheader">Recent projects</div>
+                    {recent.map(rp => (
+                      <div
+                        key={rp.path}
+                        className="shell-menu-item shell-menu-item-recent"
+                        onClick={() => openProject(rp.path)}
+                        title={rp.path}
+                      >
+                        <span className="shell-tag">📂</span>
+                        <span className="shell-menu-recent-name">{rp.name}</span>
+                        <span className="shell-menu-recent-dir">{shortenRecentPath(rp.path)}</span>
+                        <button
+                          className="shell-menu-recent-x"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            const cur = useStore.getState().settings.recentProjects || []
+                            useStore.getState().updateSettings({ recentProjects: cur.filter(p => p.path !== rp.path) })
+                          }}
+                          title="Remove from recents"
+                        >×</button>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
+            )
+          })()}
         </div>,
         document.body
       )}

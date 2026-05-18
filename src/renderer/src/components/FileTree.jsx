@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { iconUrlForFile, iconUrlForFolder } from '../file-icons'
 
 // Path join that respects whichever separator the parent uses (Win vs POSIX).
 function joinPath(dir, name) {
@@ -8,8 +9,20 @@ function joinPath(dir, name) {
 
 // Recursive directory tree. Children lazy-load when a folder is expanded.
 // onOpen(path) fires when the user clicks a file (open in editor).
-export default function FileTree({ rootPath, activeFile, onOpen }) {
-  const [expanded, setExpanded] = useState({ [rootPath]: true })
+export default function FileTree({ rootPath, activeFile, onOpen, revealRequest, persistedExpanded, onExpandedChange }) {
+  // If a persisted expansion map was passed in, use it as the initial state
+  // so the tree restores its open folders after being unmounted (e.g. when
+  // the user switches to the git panel and back).
+  const [expanded, setExpandedLocal] = useState(persistedExpanded || { [rootPath]: true })
+  // Wrap setExpanded so every update also bubbles up to the parent for
+  // persistence in the store.
+  const setExpanded = (updater) => {
+    setExpandedLocal(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      try { onExpandedChange?.(next) } catch {}
+      return next
+    })
+  }
   const [children, setChildren] = useState({})   // path → items[]
   const [loading,  setLoading]  = useState({})   // path → bool
   const [contextMenu, setContextMenu] = useState(null)
@@ -39,6 +52,45 @@ export default function FileTree({ rootPath, activeFile, onOpen }) {
 
   useEffect(() => { loadDir(rootPath) }, [rootPath, loadDir])
 
+  // On mount, pre-load children for any directories that were expanded before
+  // the tree was last unmounted (so the persisted expanded state is visible).
+  useEffect(() => {
+    if (!persistedExpanded) return
+    for (const d of Object.keys(persistedExpanded)) {
+      if (persistedExpanded[d] && d !== rootPath && !children[d]) loadDir(d)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Reveal-in-tree: expand all parent dirs of activeFile and scroll its row.
+  useEffect(() => {
+    if (!activeFile || !revealRequest) return
+    // activeFile starts with rootPath. Walk segments between them.
+    const sepChar = rootPath.includes('\\') ? '\\' : '/'
+    if (!activeFile.startsWith(rootPath)) return
+    const rel = activeFile.slice(rootPath.length).replace(/^[\\/]/, '')
+    const parts = rel.split(/[\\/]/)
+    if (parts.length <= 1) return
+    let dir = rootPath
+    const toExpand = []
+    for (let i = 0; i < parts.length - 1; i++) {
+      dir = dir.replace(/[\\/]$/, '') + sepChar + parts[i]
+      toExpand.push(dir)
+    }
+    setExpanded(prev => {
+      const next = { ...prev }
+      for (const d of toExpand) next[d] = true
+      return next
+    })
+    for (const d of toExpand) if (!children[d]) loadDir(d)
+    // Wait a frame then scroll active row into view.
+    setTimeout(() => {
+      const list = document.querySelector('.ft-list')
+      const active = list?.querySelector('.ft-row.active')
+      active?.scrollIntoView({ block: 'center' })
+    }, 80)
+  }, [revealRequest])
+
   // Watch FS events — refresh affected directory.
   useEffect(() => {
     const off = window.nexterm.project.onFsEvent(({ dir, path }) => {
@@ -64,19 +116,14 @@ export default function FileTree({ rootPath, activeFile, onOpen }) {
     })
   }
 
+  // Resolve a Material Icon Theme SVG URL for any file/folder. Same icons
+  // VS Code shows with the "Material Icon Theme" extension — ~1200 file
+  // types, ~4600 folder names, all properly colored.
   function iconFor(item) {
-    if (item.isDir) return expanded[item.path] ? '📂' : '📁'
-    const ext = item.name.split('.').pop()?.toLowerCase()
-    const map = {
-      js: '🟨', jsx: '⚛️', ts: '🟦', tsx: '⚛️', json: '📋',
-      md: '📝', py: '🐍', go: '🐹', rs: '🦀',
-      html: '🌐', css: '🎨', scss: '🎨',
-      png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', svg: '🖼️',
-      pdf: '📄', zip: '📦', exe: '⚙️',
-      yaml: '⚙️', yml: '⚙️', toml: '⚙️', env: '🔑',
-      sh: '💻', ps1: '💻', bat: '💻'
-    }
-    return map[ext] || '📄'
+    const url = item.isDir
+      ? iconUrlForFolder(item.name, !!expanded[item.path])
+      : iconUrlForFile(item.name)
+    return url ? <img className="ft-svg" src={url} alt="" draggable={false} /> : null
   }
 
   function onContext(e, item) {
@@ -247,6 +294,15 @@ export default function FileTree({ rootPath, activeFile, onOpen }) {
           {contextMenu.item.name !== 'root' && (
             <>
               <div onClick={() => { startRename(contextMenu.item); setContextMenu(null) }}>Rename</div>
+              <div className="ft-sep" />
+              <div onClick={async () => {
+                const ignorePattern = contextMenu.item.isDir
+                  ? contextMenu.item.name + '/'
+                  : contextMenu.item.name
+                const r = await window.nexterm.gitc.gitignoreAdd(rootPath, ignorePattern)
+                setContextMenu(null)
+                if (!r?.ok) await window.nexterm.confirm({ message: 'Could not update .gitignore', detail: r?.error || '' })
+              }}>Add to .gitignore</div>
               <div className="danger" onClick={() => { deleteItem(contextMenu.item); setContextMenu(null) }}>Delete</div>
             </>
           )}

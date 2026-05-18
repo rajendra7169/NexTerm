@@ -23,10 +23,16 @@ export default function AiExplain({ context, onClose, onRunCommand }) {
   const [result, setResult] = useState(null)
   const [error,  setError]  = useState(null)
 
-  const mode     = ai.mode || 'cloud'
-  const provider = mode === 'local' ? 'ollama' : (ai.cloud?.provider || 'groq')
-  const model    = mode === 'local' ? (ai.local?.model || 'qwen2.5-coder:7b')
-                                    : (ai.cloud?.model || 'llama-3.3-70b-versatile')
+  // Three modes: bundled (built-in node-llama-cpp), local (Ollama daemon),
+  // cloud (groq/openai/etc). Earlier this only had local/cloud branches, so
+  // bundled silently fell through to cloud and called groq.
+  const mode     = ai.mode || 'bundled'
+  const provider = mode === 'bundled' ? 'bundled'
+                : mode === 'local'    ? 'ollama'
+                                      : (ai.cloud?.provider || 'groq')
+  const model    = mode === 'bundled' ? (ai.bundled?.model || '')
+                : mode === 'local'    ? (ai.local?.model || 'qwen2.5-coder:7b')
+                                      : (ai.cloud?.model || 'llama-3.3-70b-versatile')
 
   useEffect(() => {
     let cancelled = false
@@ -50,12 +56,20 @@ export default function AiExplain({ context, onClose, onRunCommand }) {
             setError(`No API key set for ${provider}. Open Settings → AI and add a free API key.`)
             setBusy(false); clearTimeout(timeoutId); return
           }
-        } else {
-          // Local mode — pre-flight checks so user gets clear feedback instead of a silent stall
-          const running = await window.nexterm.ai.isOllamaRunning()
-          if (!running) {
-            setError('Ollama daemon is not running. Open Settings → AI and click Start Ollama (or install/reboot once).')
+        } else if (mode === 'bundled') {
+          if (!model) {
+            setError('No built-in model selected. Open Settings → AI and pick one.')
             setBusy(false); clearTimeout(timeoutId); return
+          }
+        } else {
+          // Ollama mode — pre-flight checks so user gets clear feedback instead of a silent stall
+          let running = await window.nexterm.ai.isOllamaRunning()
+          if (!running) {
+            const sr = await window.nexterm.ai.startOllama()
+            if (!sr?.ok) {
+              setError('Could not start Ollama daemon. Open Settings → AI to check.')
+              setBusy(false); clearTimeout(timeoutId); return
+            }
           }
           const localModels = await window.nexterm.ai.listLocalModels()
           const hasModel = (localModels || []).some(m =>
@@ -130,7 +144,11 @@ Briefly explain the failure (1-2 sentences), then on a new line write "Fix: <ONE
         <div className="ai-bar-header">
           <span className="ai-bar-icon">✨</span>
           <span>Explain & Fix</span>
-          <span className="ai-bar-meta">{mode === 'cloud' ? `${provider} · ${model}` : `local · ${model}`}</span>
+          <span className="ai-bar-meta">{
+            mode === 'cloud'   ? `${provider} · ${model}` :
+            mode === 'bundled' ? `built-in · ${model || 'no model'}` :
+                                 `ollama · ${model}`
+          }</span>
         </div>
 
         <div className="ai-bar-scroll">
@@ -138,7 +156,7 @@ Briefly explain the failure (1-2 sentences), then on a new line write "Fix: <ONE
             <div className="ai-bar-status">
               <span className="ai-bar-spinner" />
               <span>
-                analyzing with <strong>{mode === 'cloud' ? provider : 'Ollama'}</strong>
+                analyzing with <strong>{mode === 'cloud' ? provider : mode === 'bundled' ? 'Built-in' : 'Ollama'}</strong>
                 {' '}({model})…
                 {mode === 'local' && <span style={{ opacity: 0.6 }}> {' '}— first call on a freshly-loaded model can take 10-30s</span>}
               </span>

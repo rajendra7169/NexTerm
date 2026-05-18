@@ -132,7 +132,23 @@ contextBridge.exposeInMainWorld('nexterm', {
   },
 
   system: {
-    load: () => ipcRenderer.invoke('system:load')
+    load:       () => ipcRenderer.invoke('system:load'),
+    liveCounts: () => ipcRenderer.invoke('system:liveCounts')
+  },
+
+  tray: {
+    setEnabled: (on)   => ipcRenderer.invoke('tray:setEnabled', on),
+    setTabs:    (tabs) => ipcRenderer.send('tray:setTabs', tabs),
+    onFocusTab: (cb) => {
+      const fn = (_, id) => cb(id)
+      ipcRenderer.on('tray:focusTab', fn)
+      return () => ipcRenderer.removeListener('tray:focusTab', fn)
+    },
+    onNewTab: (cb) => {
+      const fn = () => cb()
+      ipcRenderer.on('tray:newTab', fn)
+      return () => ipcRenderer.removeListener('tray:newTab', fn)
+    }
   },
 
   ai: {
@@ -140,6 +156,8 @@ contextBridge.exposeInMainWorld('nexterm', {
     detectOllama:    ()      => ipcRenderer.invoke('ai:detectOllama'),
     isOllamaRunning: ()      => ipcRenderer.invoke('ai:isOllamaRunning'),
     listLocalModels: ()      => ipcRenderer.invoke('ai:listLocalModels'),
+    detectClaudeCli: ()      => ipcRenderer.invoke('ai:detectClaudeCli'),
+    claudeLogin:     ()      => ipcRenderer.invoke('ai:claudeLogin'),
     complete:        (opts)  => ipcRenderer.invoke('ai:complete', opts),
     streamStart:     (opts)  => ipcRenderer.invoke('ai:stream:start', opts),
     streamCancel:    (id)    => ipcRenderer.invoke('ai:stream:cancel', id),
@@ -165,7 +183,33 @@ contextBridge.exposeInMainWorld('nexterm', {
       return () => ipcRenderer.removeListener('ai:pullProgress', fn)
     },
     // Conversation history
-    convList:   ()       => ipcRenderer.invoke('ai:conv:list'),
+    // Bundled in-process engine (node-llama-cpp) — no Ollama needed.
+    bundled: {
+      list:      ()   => ipcRenderer.invoke('aiBundled:list'),
+      recommend: ()   => ipcRenderer.invoke('aiBundled:recommend'),
+      loaded:    ()   => ipcRenderer.invoke('aiBundled:loaded'),
+      load:      (id) => ipcRenderer.invoke('aiBundled:load', id),
+      unload:    ()   => ipcRenderer.invoke('aiBundled:unload'),
+      download:  (id) => ipcRenderer.invoke('aiBundled:download', id),
+      remove:    (id) => ipcRenderer.invoke('aiBundled:remove', id)
+    },
+    bundledList:      ()    => ipcRenderer.invoke('aiBundled:list'),
+    bundledRecommend: ()    => ipcRenderer.invoke('aiBundled:recommend'),
+    bundledLoaded:    ()    => ipcRenderer.invoke('aiBundled:loaded'),
+    bundledLoad:      (id)  => ipcRenderer.invoke('aiBundled:load', id),
+    bundledUnload:    ()    => ipcRenderer.invoke('aiBundled:unload'),
+    bundledDownload:  (id)  => ipcRenderer.invoke('aiBundled:download', id),
+    bundledRemove:    (id)  => ipcRenderer.invoke('aiBundled:remove', id),
+    bundledCancel:    (id)  => ipcRenderer.invoke('aiBundled:cancel', id),
+    applyMode: (opts)       => ipcRenderer.invoke('ai:applyMode', opts || {}),
+    bundledPartial:   (id)  => ipcRenderer.invoke('aiBundled:partial', id),
+    onBundledProgress: (cb) => {
+      const fn = (_, p) => cb(p)
+      ipcRenderer.on('aiBundled:progress', fn)
+      return () => ipcRenderer.removeListener('aiBundled:progress', fn)
+    },
+
+    convList:   (opts)   => ipcRenderer.invoke('ai:conv:list', opts || {}),
     convCreate: (opts)   => ipcRenderer.invoke('ai:conv:create', opts),
     convRename: (opts)   => ipcRenderer.invoke('ai:conv:rename', opts),
     convDelete: (id)     => ipcRenderer.invoke('ai:conv:delete', id),
@@ -188,6 +232,11 @@ contextBridge.exposeInMainWorld('nexterm', {
     rename:     (from, to)        => ipcRenderer.invoke('project:rename', { from, to }),
     watch:      (dir)             => ipcRenderer.invoke('project:watch', dir),
     unwatch:    (dir)             => ipcRenderer.invoke('project:unwatch', dir),
+    listAllFiles: (dir)           => ipcRenderer.invoke('project:listAllFiles', dir),
+    search:     (dir, query, options) => ipcRenderer.invoke('project:search', { dir, query, options }),
+    loadWorkspaceConfig: (dir)    => ipcRenderer.invoke('project:loadWorkspaceConfig', dir),
+    saveWorkspaceConfig: (dir, config) => ipcRenderer.invoke('project:saveWorkspaceConfig', { dir, config }),
+    installCli:   ()              => ipcRenderer.invoke('project:installCli'),
     onFsEvent:  (cb) => {
       const fn = (_, data) => cb(data)
       ipcRenderer.on('project:fsEvent', fn)
@@ -220,6 +269,46 @@ contextBridge.exposeInMainWorld('nexterm', {
     info: (path) => ipcRenderer.invoke('git:info', path)
   },
 
+  // Coder mode Source Control panel
+  gitc: {
+    status:      (dir)               => ipcRenderer.invoke('gitc:status', dir),
+    init:        (dir)               => ipcRenderer.invoke('gitc:init', dir),
+    stage:       (dir, paths)        => ipcRenderer.invoke('gitc:stage', { dir, paths }),
+    unstage:     (dir, paths)        => ipcRenderer.invoke('gitc:unstage', { dir, paths }),
+    stageAll:    (dir)               => ipcRenderer.invoke('gitc:stageAll', dir),
+    discard:     (dir, path)         => ipcRenderer.invoke('gitc:discard', { dir, path }),
+    commit:      (dir, message, stageAll) => ipcRenderer.invoke('gitc:commit', { dir, message, stageAll }),
+    log:         (dir, limit)        => ipcRenderer.invoke('gitc:log', { dir, limit }),
+    diffFile:    (dir, path, staged) => ipcRenderer.invoke('gitc:diffFile', { dir, path, staged }),
+    diffStaged:  (dir)               => ipcRenderer.invoke('gitc:diffStaged', dir),
+    fileMarkers: (dir, path)         => ipcRenderer.invoke('gitc:fileMarkers', { dir, path }),
+    push:        (dir, setUpstream)  => ipcRenderer.invoke('gitc:push', { dir, setUpstream }),
+    pull:        (dir)               => ipcRenderer.invoke('gitc:pull', dir),
+    fetch:       (dir)               => ipcRenderer.invoke('gitc:fetch', dir),
+    commitDiff:  (dir, hash)         => ipcRenderer.invoke('gitc:commitDiff', { dir, hash }),
+    // Branches
+    listBranches: (dir)              => ipcRenderer.invoke('gitc:listBranches', dir),
+    checkout:    (dir, branch, createFromRemote) => ipcRenderer.invoke('gitc:checkout', { dir, branch, createFromRemote }),
+    createBranch:(dir, name)         => ipcRenderer.invoke('gitc:createBranch', { dir, name }),
+    renameBranch:(dir, oldName, newName) => ipcRenderer.invoke('gitc:renameBranch', { dir, oldName, newName }),
+    // Stash
+    stashList:   (dir)               => ipcRenderer.invoke('gitc:stashList', dir),
+    stashPush:   (dir, message, includeUntracked) => ipcRenderer.invoke('gitc:stashPush', { dir, message, includeUntracked }),
+    stashApply:  (dir, ref, pop)     => ipcRenderer.invoke('gitc:stashApply', { dir, ref, pop }),
+    stashDrop:   (dir, ref)          => ipcRenderer.invoke('gitc:stashDrop', { dir, ref }),
+    // Working tree reset
+    discardAll:  (dir, includeUntracked) => ipcRenderer.invoke('gitc:discardAll', { dir, includeUntracked }),
+    // Conflicts
+    resolveConflict: (dir, path, side) => ipcRenderer.invoke('gitc:resolveConflict', { dir, path, side }),
+    // Blame
+    blame:       (dir, path)         => ipcRenderer.invoke('gitc:blame', { dir, path }),
+    // Per-commit ops
+    revert:      (dir, hash)         => ipcRenderer.invoke('gitc:revert', { dir, hash }),
+    cherryPick:  (dir, hash)         => ipcRenderer.invoke('gitc:cherryPick', { dir, hash }),
+    // gitignore
+    gitignoreAdd:(dir, pattern)      => ipcRenderer.invoke('gitc:gitignoreAdd', { dir, pattern })
+  },
+
   quake: {
     apply: (opts) => ipcRenderer.invoke('quake:apply', opts)
   },
@@ -234,7 +323,8 @@ contextBridge.exposeInMainWorld('nexterm', {
   },
 
   app: {
-    initialCwd: () => ipcRenderer.invoke('app:initialCwd')
+    initialCwd:     () => ipcRenderer.invoke('app:initialCwd'),
+    initialProject: () => ipcRenderer.invoke('app:initialProject')
   },
 
   banner: {

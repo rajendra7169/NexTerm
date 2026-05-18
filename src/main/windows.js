@@ -23,6 +23,20 @@ export function registerWindow(win) {
     windows.delete(win)
     if (primary === win) primary = [...windows][0] || null
   })
+  // If THIS window's renderer dies, leave the rest alone. Reload its content
+  // so the user gets a working window back instead of a blank one.
+  win.webContents.on('render-process-gone', (_evt, details) => {
+    console.error(`[Window ${win.id}] renderer gone:`, details?.reason, details?.exitCode)
+    try {
+      if (!win.isDestroyed()) win.reload()
+    } catch (e) {
+      console.error('[Window] reload after crash failed', e)
+    }
+  })
+  // Same for unresponsive (rare hangs)
+  win.on('unresponsive', () => {
+    console.warn(`[Window ${win.id}] became unresponsive`)
+  })
 }
 
 // Send to every alive renderer. Per-pty data uses channels like

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from './store'
 import { getTheme } from './themes'
 import { matchKey, getKey } from './shortcuts'
@@ -36,6 +36,8 @@ import TabBar from './components/TabBar'
 import PaneSplitter from './components/PaneSplitter'
 import CoderEditor from './components/Editor'
 import MenuBar from './components/MenuBar'
+import ErrorBoundary from './components/ErrorBoundary'
+import WelcomeWizard from './components/WelcomeWizard'
 import Settings from './components/Settings'
 import CommandPalette from './components/CommandPalette'
 import HistoryPanel from './components/HistoryPanel'
@@ -50,6 +52,7 @@ import AiExplain from './components/AiExplain'
 export default function App() {
   const { tabs, activeId, settings, setSettings, addTab, removeTab, setActive,
           splitActivePane, closePane, setTabs, cwds } = useStore()
+  const settingsLoaded = useStore(s => s.settingsLoaded)
 
   const [showSettings, setShowSettings] = useState(false)
   const [showPalette,  setShowPalette]  = useState(false)
@@ -62,6 +65,29 @@ export default function App() {
   const profiles = useStore(s => s.profiles)
   const setProfiles = useStore(s => s.setProfiles)
 
+  // Sync the AI Chat panel visibility with the active editor tab's saved
+  // aiChatOpen flag — so reopening a project restores it to the same state.
+  // Terminal tabs ignore this (they keep the global toggle).
+  useEffect(() => {
+    const tab = tabs.find(t => t.id === activeId)
+    if (tab?.type === 'editor') {
+      setShowAiChat(tab.aiChatOpen === true)
+    }
+  }, [activeId, tabs])
+
+  // Toggle AI Chat. For editor tabs we also persist the new state so it
+  // sticks across restarts; for terminal tabs the toggle is in-memory only.
+  function toggleAiChat() {
+    const tab = tabs.find(t => t.id === activeId)
+    setShowAiChat(prev => {
+      const next = !prev
+      if (tab?.type === 'editor') {
+        useStore.getState().setEditorAiChatOpen(tab.id, next)
+      }
+      return next
+    })
+  }
+
   // Toggle the maximized class so CSS can drop the rounded edge / shadow padding
   useEffect(() => {
     const off = window.nexterm.win.onMaximizeChange((isMax) => {
@@ -70,6 +96,18 @@ export default function App() {
     return off
   }, [])
 
+
+  // Enforce AI backend exclusivity. When the user switches modes (or turns
+  // AI off entirely), free RAM of the OTHER backends immediately — no
+  // waiting for the 5-minute idle timer.
+  useEffect(() => {
+    const ai = settings.ai || {}
+    if (ai.enabled === false) {
+      window.nexterm.ai.applyMode?.({ enabled: false })
+    } else {
+      window.nexterm.ai.applyMode?.({ enabled: true, mode: ai.mode || 'bundled' })
+    }
+  }, [settings.ai?.enabled, settings.ai?.mode])
 
   // Listen for live settings changes from OTHER NexTerm windows so the
   // theme, fonts, etc. stay in sync across windows of the same app.
@@ -195,13 +233,78 @@ export default function App() {
   const hasBootstrap = (window.location.hash || '').includes('bootstrap=')
   if (hasBootstrap) window.__nextermBootstrap = true
 
+  // Keep the system tray's "Recent tabs" menu in sync with our tab list.
+  // Only when run-in-background is on; otherwise the tray doesn't exist.
   useEffect(() => {
+    if (settings.runInBackground !== true) return
+    window.nexterm.tray?.setTabs?.(tabs.map(t => ({ id: t.id, name: t.name })))
+  }, [tabs, settings.runInBackground])
+
+  // When run-in-background toggles, create/destroy the tray
+  useEffect(() => {
+    window.nexterm.tray?.setEnabled?.(settings.runInBackground === true)
+  }, [settings.runInBackground])
+
+  // Tray actions: focus a tab or open a new one
+  useEffect(() => {
+    const offFocus = window.nexterm.tray?.onFocusTab?.((id) => setActive(id))
+    const offNew   = window.nexterm.tray?.onNewTab?.(() => addTab())
+    return () => { offFocus?.(); offNew?.() }
+  }, [])
+
+  // CLI launch: `nexterm <folder>` (via the installed launcher) auto-opens
+  // that folder as a Coder tab on startup.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const p = await window.nexterm.app.initialProject?.()
+        if (cancelled || !p) return
+        if (window.__nextermBootstrap) return   // child window handles its own
+        setTimeout(() => { try { useStore.getState().addEditorTab(p) } catch {} }, 200)
+      } catch {}
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Restore the most-recent project on startup if the user opted in.
+  // Opens it as a SEPARATE NexTerm window so the main window stays a clean
+  // terminal session. Runs ONCE per window mount, only in the main
+  // (non-bootstrap) window.
+  const restoredRef = useRef(false)
+  useEffect(() => {
+    if (restoredRef.current) return
+    if (window.__nextermBootstrap) return
+    if (settings.coder?.restoreLastProject !== true) return
+    const recent = settings.recentProjects || []
+    if (recent.length === 0) return
+    restoredRef.current = true
+    setTimeout(async () => {
+      const p = recent[0]?.path
+      if (!p) return
+      try {
+        // Open the project in its own window — main window stays terminal-only.
+        const r = await window.nexterm.window?.openWith?.({ kind: 'editor', projectPath: p })
+        if (!r?.ok) {
+          // Fallback if window-creation failed: open as a tab here.
+          useStore.getState().addEditorTab(p)
+        }
+      } catch (e) {
+        console.error('[restoreLastProject]', e)
+      }
+    }, 1200)
+  }, [settings.coder?.restoreLastProject, settings.recentProjects])
+
+  // Bootstrap runs AFTER settings load so addEditorTab() can hydrate from
+  // settings.projectWorkspaces. Otherwise the project opens blank because
+  // settings.projectWorkspaces is still {} when the bootstrap fires.
+  useEffect(() => {
+    if (!settingsLoaded) return
     const hash = window.location.hash || ''
     const m = hash.match(/bootstrap=([^&]+)/)
     if (!m) return
     const payload = decodeURIComponent(m[1])
     if (payload === 'blank') {
-      // Replace whatever the default first tab is with a single fresh terminal.
       const { tabs: ts, addTab: at, removeTab: rm } = useStore.getState()
       const fresh = at()
       ts.filter(t => t.id !== fresh.id).forEach(t => rm(t.id))
@@ -211,9 +314,8 @@ export default function App() {
       const editor = ae(dir)
       ts.filter(t => t.id !== editor.id).forEach(t => rm(t.id))
     }
-    // Clear the hash so a refresh doesn't re-bootstrap.
     try { window.history.replaceState(null, '', window.location.pathname) } catch {}
-  }, [])
+  }, [settingsLoaded])
 
   // Persist current session whenever tabs change.
   // Skip in child windows (bootstrap flag set) so they don't overwrite the
@@ -313,7 +415,7 @@ export default function App() {
       if (matchKey(e, getKey(settings, 'snippets'))) { e.preventDefault(); setShowSnippets(s => !s); return }
       if (matchKey(e, getKey(settings, 'sftp')))     { e.preventDefault(); setShowSftp(s => !s); return }
       if (matchKey(e, getKey(settings, 'findAll'))) { e.preventDefault(); setShowFindAll(s => !s); return }
-      if (matchKey(e, getKey(settings, 'aiBar')))   { e.preventDefault(); setShowAiChat(s => !s); return }
+      if (matchKey(e, getKey(settings, 'aiBar')))   { e.preventDefault(); toggleAiChat(); return }
       if (matchKey(e, shortcuts.palette))   { e.preventDefault(); setShowPalette(s => !s); return }
       if (matchKey(e, shortcuts.newTab))    { e.preventDefault(); addTab(); return }
       if (matchKey(e, shortcuts.closePane)) { e.preventDefault(); closePane(); return }
@@ -381,7 +483,7 @@ export default function App() {
         onHistory={()  => setShowHistory(s => !s)}
         onPalette={()  => setShowPalette(s => !s)}
         onProfiles={() => setShowProfiles(s => !s)}
-        onAi={()       => setShowAiChat(s => !s)}
+        onAi={toggleAiChat}
       />
       {(() => {
         const activeTab = tabs.find(t => t.id === activeId)
@@ -395,7 +497,7 @@ export default function App() {
                 onHistory={()  => setShowHistory(s => !s)}
                 onPalette={()  => setShowPalette(s => !s)}
                 onProfiles={() => setShowProfiles(s => !s)}
-                onAi={()       => setShowAiChat(s => !s)}
+                onAi={toggleAiChat}
               />
             )}
             {!hideTabs && <TabBar />}
@@ -411,7 +513,9 @@ export default function App() {
               className={`tab-content ${tab.id === activeId ? '' : 'hidden'}`}
             >
               {tab.type === 'editor' ? (
-                <CoderEditor tab={tab} active={tab.id === activeId} />
+                <ErrorBoundary>
+                  <CoderEditor tab={tab} active={tab.id === activeId} />
+                </ErrorBoundary>
               ) : (
                 <PaneSplitter
                   pane={tab.root}
@@ -423,7 +527,7 @@ export default function App() {
             </div>
           ))}
         </div>
-        {showAiChat && <AiChat onClose={() => setShowAiChat(false)} />}
+        {showAiChat && <AiChat onClose={toggleAiChat} />}
       </div>
 
       <StatusBar />
@@ -440,6 +544,13 @@ export default function App() {
       )}
 
       <div className="app-border" />
+
+      {/* settingsLoaded guard avoids the wizard flashing for a frame on
+          every launch — without it, the initial render runs with default
+          welcomeShown=false before the async disk read replaces it. */}
+      {settingsLoaded && !settings.welcomeShown && !window.__nextermBootstrap && (
+        <WelcomeWizard onClose={() => {}} />
+      )}
 
       {showHistory  && <HistoryPanel  onClose={() => setShowHistory(false)} />}
       {showProfiles && <ProfilesPanel onClose={() => setShowProfiles(false)} />}

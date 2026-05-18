@@ -38,6 +38,20 @@ export default function MenuBar({ onSettings, onHistory, onPalette, onProfiles, 
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
 
+  async function openProjectPath(dir, explicitNewWindow) {
+    if (!dir) return
+    const liveSettings = useStore.getState().settings
+    const useNewWindow = explicitNewWindow !== undefined
+      ? explicitNewWindow
+      : liveSettings.coder?.openInNewWindow !== false
+    if (useNewWindow) {
+      const r = await window.nexterm.window.openWith({ kind: 'editor', projectPath: dir })
+      if (!r?.ok) addEditorTab(dir)
+    } else {
+      addEditorTab(dir)
+    }
+  }
+
   async function openProject(explicitNewWindow) {
     const dir = await window.nexterm.project.pickFolder()
     if (!dir) return
@@ -89,6 +103,13 @@ export default function MenuBar({ onSettings, onHistory, onPalette, onProfiles, 
         { label: 'Open Project…',                    shortcut: 'Ctrl+Shift+O',   action: () => openProject() },
         { label: 'Open Project in New Window…',                                  action: () => openProject(true) },
         { label: 'New Window',                       shortcut: 'Ctrl+Shift+N',   action: newWindow },
+        ...((settings.recentProjects || []).length > 0 ? [
+          { sep: true },
+          ...((settings.recentProjects || []).slice(0, 8).map(rp => ({
+            label: `Recent: ${rp.name}`,
+            action: () => openProjectPath(rp.path)
+          })))
+        ] : []),
         { sep: true },
         { label: 'Save',                             shortcut: 'Ctrl+S',         disabled: !inEditor,                 action: save },
         { sep: true },
@@ -108,8 +129,24 @@ export default function MenuBar({ onSettings, onHistory, onPalette, onProfiles, 
         { label: 'Copy',  shortcut: 'Ctrl+C',   action: () => document.execCommand('copy') },
         { label: 'Paste', shortcut: 'Ctrl+V',   action: () => document.execCommand('paste') },
         { sep: true },
-        { label: 'Find',  shortcut: 'Ctrl+F',
-          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true })) }
+        { label: 'Find',                  shortcut: 'Ctrl+F',
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true })) },
+        { label: 'Replace',               shortcut: 'Ctrl+H', disabled: !inEditor,
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'h', ctrlKey: true, bubbles: true })) },
+        { label: 'Find in Files',         shortcut: 'Ctrl+Shift+F', disabled: !inEditor,
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F', ctrlKey: true, shiftKey: true, bubbles: true })) },
+        { sep: true },
+        { label: 'Go to File…',           shortcut: 'Ctrl+P',       disabled: !inEditor,
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true })) },
+        { label: 'Go to Line…',           shortcut: 'Ctrl+G',       disabled: !inEditor,
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'g', ctrlKey: true, bubbles: true })) },
+        { label: 'Go to Symbol…',         shortcut: 'Ctrl+Shift+O', disabled: !inEditor,
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'O', ctrlKey: true, shiftKey: true, bubbles: true })) },
+        { sep: true },
+        { label: 'Format Document',       shortcut: 'Shift+Alt+F',  disabled: !inEditor,
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F', shiftKey: true, altKey: true, bubbles: true })) },
+        { label: 'Toggle Word Wrap',      shortcut: 'Alt+Z',        disabled: !inEditor,
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', altKey: true, bubbles: true })) }
       ]
     },
     {
@@ -139,6 +176,13 @@ export default function MenuBar({ onSettings, onHistory, onPalette, onProfiles, 
       items: [
         { label: 'Open Project…',                shortcut: 'Ctrl+Shift+O',  action: () => openProject() },
         { label: 'Open Project in New Window…',                              action: () => openProject(true) },
+        { sep: true },
+        { label: 'Toggle Explorer',              shortcut: 'Ctrl+Shift+E', disabled: !inEditor,
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'E', ctrlKey: true, shiftKey: true, bubbles: true })) },
+        { label: 'Toggle Source Control',        shortcut: 'Ctrl+Shift+G', disabled: !inEditor,
+          action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'G', ctrlKey: true, shiftKey: true, bubbles: true })) },
+        { label: 'Reveal Active File in Tree',   disabled: !inEditor || !activeTab?.activeFile,
+          action: () => useStore.getState().revealActiveFileInTree(activeId) },
         { sep: true },
         { label: 'Move Current Tab to New Window', disabled: !activeTab,
           action: moveTabToNewWindow }

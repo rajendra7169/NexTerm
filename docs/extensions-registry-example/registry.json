@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "updated": "2026-05-15",
+  "extensions": [
+    {
+      "id": "anthropic.claude",
+      "name": "Claude",
+      "publisher": "Anthropic",
+      "version": "1.0.0",
+      "description": "Anthropic's Claude as a model in your NexTerm AI chat. Supports Claude Pro subscription auth (no API key needed) via the Claude Code CLI, or direct API key for pay-per-token.",
+      "longDescription": "Adds Claude (Opus 4.7, Sonnet 4.6, Haiku 4.5) to NexTerm's AI chat model picker.\n\nTwo authentication modes:\n\n• CLI / Subscription mode — uses Claude Code CLI (`npm i -g @anthropic-ai/claude-code`) authenticated against your Claude Pro account. No API key, no extra cost beyond your existing Claude Pro subscription. Project-aware: Claude has access to the project you have open in NexTerm.\n\n• API mode — paste an Anthropic API key in Settings → AI to use the pay-per-token API. Lower latency, no CLI dependency.\n\nNexTerm auto-detects which mode is available and uses the most cost-effective one first.",
+      "icon": "https://cdn.jsdelivr.net/gh/rajendra7169/nexterm-extensions@main/icons/claude.png",
+      "screenshots": [],
+      "tags": ["ai", "agent", "anthropic", "claude", "chat"],
+      "categories": ["AI"],
+      "installs": 0,
+      "rating": null,
+      "added": "2026-05-15",
+      "repository": "https://github.com/rajendra7169/nexterm-extensions",
+      "requires": {
+        "nexterm": ">=0.4.0"
+      },
+      "features": ["chat-provider", "agent-mode"]
+    }
+  ]
+}

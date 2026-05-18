@@ -24,10 +24,14 @@ export default function AiBar({ onClose }) {
 
   const ai = settings.ai || {}
   const enabled = ai.enabled === true
-  const mode    = ai.mode    || 'cloud'
-  const provider = mode === 'local' ? 'ollama' : (ai.cloud?.provider || 'groq')
-  const model    = mode === 'local' ? (ai.local?.model || 'qwen2.5-coder:7b')
-                                    : (ai.cloud?.model || 'llama-3.3-70b-versatile')
+  // Three modes: bundled (built-in), local (Ollama), cloud (groq/openai/etc).
+  const mode    = ai.mode    || 'bundled'
+  const provider = mode === 'bundled' ? 'bundled'
+                : mode === 'local'    ? 'ollama'
+                                      : (ai.cloud?.provider || 'groq')
+  const model    = mode === 'bundled' ? (ai.bundled?.model || '')
+                : mode === 'local'    ? (ai.local?.model || 'qwen2.5-coder:7b')
+                                      : (ai.cloud?.model || 'llama-3.3-70b-versatile')
 
   async function submit() {
     if (!prompt.trim()) return
@@ -45,11 +49,19 @@ export default function AiBar({ onClose }) {
           setBusy(false)
           return
         }
-      } else {
-        const running = await window.nexterm.ai.isOllamaRunning()
-        if (!running) {
-          setError('Ollama daemon is not running. Open Settings → AI and click Start Ollama.')
+      } else if (mode === 'bundled') {
+        if (!model) {
+          setError('No built-in model selected. Open Settings → AI and pick one.')
           setBusy(false); return
+        }
+      } else {
+        let running = await window.nexterm.ai.isOllamaRunning()
+        if (!running) {
+          const sr = await window.nexterm.ai.startOllama()
+          if (!sr?.ok) {
+            setError('Could not start Ollama daemon. Open Settings → AI to check.')
+            setBusy(false); return
+          }
         }
         const localModels = await window.nexterm.ai.listLocalModels()
         const hasModel = (localModels || []).some(m =>

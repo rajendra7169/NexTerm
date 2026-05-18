@@ -89,6 +89,21 @@ Most "free" Windows terminals are either bare-bones or have feature paywalls hid
 
 ---
 
+## 🆕 What's new in 0.4.0
+
+| Feature | What it does |
+|---|---|
+| **🧩 Extensions Panel** | VS Code-style marketplace inside the activity bar. Browse extensions from a remote registry (jsDelivr-hosted GitHub repo), install/uninstall with one click. |
+| **🤖 Claude extension** | Anthropic's Claude as a first-class AI provider. Supports **Claude Pro subscription auth** ($0 extra) via the Claude Code CLI or paid Anthropic API key. Full agent capabilities (Read/Edit/Write/Bash) with **inline tool cards** in the chat. |
+| **🧠 Built-in AI engine** | Bundled [node-llama-cpp](https://github.com/withcatai/node-llama-cpp) runs models in-process. No Ollama dependency. Auto-tuned GPU offload + KV cache so 7B models hit ~60% RAM (matches Ollama). |
+| **🎨 Material file icons** | The popular Material Icon Theme is bundled — ~1200 file types and ~4600 folder names get proper colored SVG icons in the tree. Works offline. |
+| **📑 Outline panel** | Document symbols for the active file. JS/TS uses Monaco's TypeScript worker; ~15 other languages get regex-based outlines (Python, Go, Rust, Java, C#, Ruby, etc.). |
+| **🗂️ Workspace persistence** | Open files, tree expansion state, sidebar mode, AI chat open/closed — all saved per project. Reopen NexTerm and your editor is exactly where you left it (VS Code-style). |
+| **🚀 Welcome wizard** | First-launch onboarding: pick a theme, default shell, and AI provider — or skip entirely. |
+| **🔁 Multi-mode AI routing** | Bundled / Ollama / Cloud are now independent backends with **mode exclusivity** — switching one OFF reclaims its RAM/VRAM instantly. |
+
+---
+
 ## 🚀 Features
 
 ### 🧑‍💻 Coder Mode — open & edit projects right inside NexTerm
